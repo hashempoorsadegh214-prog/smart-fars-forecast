@@ -1,19 +1,38 @@
+```yaml
 name: Smart Fars Forecast
 
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - main
+    paths:
+      - "README.md"
+      - "requirements.txt"
+      - "config/**"
+      - "scripts/**"
+      - "web/**"
+      - "fars.geojson"
+      - "dem_fars.tif"
+      - "fars_slope_60m_light.tif"
+      - "fars_fire_fuel_hazard_60m.tif"
+      - ".github/workflows/forecast.yml"
+
   schedule:
     - cron: "00 18 * * *"
+
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
+
 concurrency:
   group: smart-fars-forecast
   cancel-in-progress: false
+
 
 jobs:
 
@@ -21,25 +40,54 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
+
+      # --------------------------------------------------
+      # Checkout repository
+      # --------------------------------------------------
 
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # --------------------------------------------------
+      # Python
+      # --------------------------------------------------
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+
+      # --------------------------------------------------
+      # Install dependencies
+      # --------------------------------------------------
+
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+
+      # --------------------------------------------------
+      # Download tomorrow FWI
+      # --------------------------------------------------
 
       - name: Download tomorrow FWI
         run: |
           python scripts/download_fwi.py \
             --boundary fars.geojson \
             --output data/fwi/fwi_latest.tif
+
+
+      # --------------------------------------------------
+      # Build wildfire forecast
+      # --------------------------------------------------
 
       - name: Build wildfire forecast
         run: |
@@ -49,9 +97,46 @@ jobs:
             --output-tif data/output/fire_risk_latest.tif \
             --web-dir web/generated
 
+
+      # --------------------------------------------------
+      # Copy Fars boundary to Web GIS
+      # --------------------------------------------------
+
       - name: Copy boundary to Web GIS
         run: |
           cp fars.geojson web/fars.geojson
+
+
+      # --------------------------------------------------
+      # Verify Web GIS files
+      # --------------------------------------------------
+
+      - name: Verify Web GIS output
+        run: |
+          test -f web/index.html
+          test -f web/fars.geojson
+          test -f web/generated/fire_risk_latest.png
+          test -f web/generated/fire_risk_latest.json
+
+          echo "Web GIS files:"
+          find web -maxdepth 3 -type f | sort
+
+
+      # --------------------------------------------------
+      # Verify forecast raster
+      # --------------------------------------------------
+
+      - name: Verify forecast output
+        run: |
+          test -f data/output/fire_risk_latest.tif
+          test -f data/output/fire_risk_latest.json
+
+          echo "Forecast raster created successfully."
+
+
+      # --------------------------------------------------
+      # Upload model artifacts
+      # --------------------------------------------------
 
       - name: Upload model outputs
         uses: actions/upload-artifact@v4
@@ -64,14 +149,30 @@ jobs:
             data/output/fire_risk_latest.json
           retention-days: 14
 
+
+      # --------------------------------------------------
+      # Configure GitHub Pages
+      # --------------------------------------------------
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
+
+
+      # --------------------------------------------------
+      # Prepare Pages artifact
+      # --------------------------------------------------
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: web
 
+
+      # --------------------------------------------------
+      # Deploy
+      # --------------------------------------------------
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+```
