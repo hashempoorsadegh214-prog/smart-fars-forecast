@@ -11,6 +11,9 @@ CORRECTED VERSION:
 - get_web_bounds(): replaces the two-corner transform with a dense sampling of all
   four outer edges of the raster bounds, transformed to EPSG:4326 (always_xy=True),
   rejecting non-finite results.
+- OUT_DIR is portable: defaults to <project_root>/generated (project root derived
+  from this script's location; intended layout: <project_root>/scripts/build_forecast.py),
+  overridable via the FARS_FORECAST_OUT_DIR environment variable.
 
 Requires: rasterio, shapely, numpy, geopandas (optional fallback), pyproj, PIL.
 """
@@ -19,6 +22,7 @@ import json
 import math
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import rasterio
@@ -31,11 +35,45 @@ from shapely.geometry import shape
 # ----------------------------------------------------------------------------
 MAX_DIMENSION = 2048          # largest PNG dimension (existing scale rule)
 ALPHA_PROVINCE = 235          # alpha value inside province & valid risk
-OUT_DIR = "/mnt/data/output"
+
+
+def _resolve_project_root():
+    """
+    Robust project root: parent of the directory containing this script
+    (works when the script lives in <repo>/scripts/), with fallbacks.
+    """
+    here = Path(__file__).resolve()
+    for candidate in here.parents:
+        if (candidate / ".git").exists() or \
+           (candidate / "scripts" / here.name).exists():
+            return candidate
+    if here.parent.name == "scripts" and here.parent.parent != here.parent:
+        return here.parent.parent
+    return here.parent
+
+
+PROJECT_ROOT = _resolve_project_root()
+
+
+def _resolve_out_dir():
+    """
+    Output directory: FARS_FORECAST_OUT_DIR overrides the default
+    <project_root>/generated. Relative override values are resolved against the
+    project root; `~` in the override is expanded to the user's home.
+    """
+    override = os.environ.get("FARS_FORECAST_OUT_DIR")
+    if override:
+        path = Path(os.path.expanduser(override))
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return str(path.resolve())
+    return str((PROJECT_ROOT / "generated").resolve())
+
+
+OUT_DIR = _resolve_out_dir()
 PNG_PATH = os.path.join(OUT_DIR, "fars_forecast_web.png")
 RASTER_PATH = os.path.join(OUT_DIR, "fars_forecast_raster.tif")
 METADATA_PATH = os.path.join(OUT_DIR, "forecast_metadata.json")
-
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -57,14 +95,12 @@ def get_fars_geometry(fars_boundary_master):
         return shape(gi), crs
     raise TypeError("Unsupported boundary object: %r" % type(fars_boundary_master))
 
-
 def compute_target_size(master_width, master_height):
     """Existing scale rule: longest side becomes MAX_DIMENSION."""
     scale = MAX_DIMENSION / float(max(master_width, master_height))
     target_width = max(1, int(round(master_width * scale)))
     target_height = max(1, int(round(master_height * scale)))
     return target_width, target_height
-
 
 def get_web_bounds(raster_path_or_ds, master_transform, master_width, master_height, master_crs):
     """
@@ -112,7 +148,6 @@ def get_web_bounds(raster_path_or_ds, master_transform, master_width, master_hei
         raise ValueError("get_web_bounds: degenerate bounds ordering.")
     return [minx, miny, maxx, maxy]
 
-
 def colorize_risk_rgb(risk_data, colormap):
     """Map float risk values to RGB via linear interpolation over colormap stops."""
     finite = np.isfinite(risk_data)
@@ -133,7 +168,6 @@ def colorize_risk_rgb(risk_data, colormap):
     out[..., 2][finite] = b
     return out.astype(np.uint8), finite
 
-
 # ----------------------------------------------------------------------------
 # CORRECTED: create_web_gradient
 # ----------------------------------------------------------------------------
@@ -148,8 +182,7 @@ def create_web_gradient(raster_path, fars_boundary_master, master_transform=None
        interpolation; no alpha bleed).
     3) Rasterize province boundary DIRECTLY into final PNG dimensions using
        the scaled affine transform:
-         sx = master_width / target_width
-         sy = master_height / target_height
+_transform = Affine(a*sx, b*sx, c, d target_height
          target_transform = Affine(a*sx, b*sx, c, d*sy, e*sy, f)
        in the master CRS with all_touched=False.
     4) Alpha = ALPHA_PROVINCE (235) where (province mask AND finite risk) else 0.
@@ -240,7 +273,6 @@ def create_web_gradient(raster_path, fars_boundary_master, master_transform=None
     }
     return out_img, info
 
-
 # ----------------------------------------------------------------------------
 # Metadata builder
 # ----------------------------------------------------------------------------
@@ -260,7 +292,6 @@ def build_metadata(info, extra=None):
     if extra:
         meta.update(extra)
     return meta
-
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -334,7 +365,6 @@ def main():
     print("PNG size:", img.size)
     print("Web bounds:", info["web_bounds"])
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
