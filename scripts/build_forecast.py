@@ -15,7 +15,10 @@ CORRECTED VERSION:
   from this script's location; intended layout: <project_root>/scripts/build_forecast.py),
   overridable via the FARS_FORECAST_OUT_DIR environment variable.
 
-Requires: rasterio, shapely, numpy, geopandas (optional fallback), pyproj, PIL.
+Requires: rasterio, shapely, numpy, pyproj, PIL. GeoPandas/Fiona are OPTIONAL:
+boundaries are loaded via fiona or plain GeoJSON JSON; reprojection uses pyproj.
+If neither fiona nor geopandas is present and a non-GeoJSON boundary file is
+given, a bilingual (Persian/English) ImportError with install commands is raised.
 """
 
 import json
@@ -71,6 +74,92 @@ def _resolve_out_dir():
 
 
 OUT_DIR = _resolve_out_dir()
+
+# ----------------------------------------------------------------------------
+# GeoPandas-free boundary handling (fiona/pyproj/shapely fallback)
+# ----------------------------------------------------------------------------
+class Boundary:
+    """Minimal GeoDataFrame-like container: .crs and .geometry (list)."""
+    def __init__(self, geometries, crs):
+        if not isinstance(geometries, (list, tuple)):
+            geometries = [geometries]
+        self.geometries = list(geometries)
+        self.crs = crs
+
+    @property
+    def geometry(self):
+        return self.geometries
+
+def reproject_geom(geom, src_crs, dst_crs):
+    """Reproject a shapely geometry using pyproj (no geopandas needed)."""
+    if src_crs is None or dst_crs is None:
+        raise ValueError("Both src_crs and dst_crs are required to reproject.")
+    from shapely.ops import transform as shp_transform
+    from pyproj import Transformer
+    if str(src_crs) == str(dst_crs):
+        return geom
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    out = shp_transform(transformer.transform, geom)
+    if out is None or out.is_empty:
+        raise ValueError("Reprojection produced an empty geometry.")
+    return out
+
+def load_boundary_file(path):
+    """
+    Load a vector boundary file into a Boundary object. No mandatory geopandas.
+    Strategy:
+      1) fiona (if installed) — reads shapefile/GPKG/GeoJSON;
+      2) plain JSON GeoJSON via stdlib json + shapely.geometry.shape;
+      3) otherwise, actionable bilingual ImportError.
+    """
+    try:
+        import fiona
+    except ImportError:
+        fiona = None
+
+    if fiona is not None:
+        try:
+            with fiona.open(path) as src:
+                crs = src.crs or "EPSG:4326"
+                try:
+                    from pyproj import CRS as _CRS
+                    crs = _CRS.from_user_input(crs).to_string()
+                except Exception:
+                    if isinstance(crs, dict):
+                        crs = crs.get("init") or ("EPSG:%s" % crs.get("epsg", 4326))
+                    crs = str(crs) or "EPSG:4326"
+                geoms = [shape(f["geometry"]) for f in src if f.get("geometry")]
+            if geoms:
+                return Boundary(geoms, crs)
+        except Exception:
+            pass
+
+    lower = str(path).lower()
+    if lower.endswith((".geojson", ".json")):
+        with open(path, encoding="utf-8") as f:
+            gj = json.load(f)
+        feats = gj.get("features", [gj])
+        geoms, crs = [], None
+        for ft in feats:
+            g = ft.get("geometry", ft) if isinstance(ft, dict) else ft
+            if g is None:
+                continue
+            geoms.append(shape(g))
+            if crs is None:
+                crs_obj = (ft.get("crs") or gj.get("crs") or {}).get("properties", {})
+                crs = (crs_obj.get("name") if isinstance(crs_obj, dict) else None)
+        if not geoms:
+            raise ValueError("No geometries found in %s" % path)
+        return Boundary(geoms, crs or "EPSG:4326")
+
+    raise ImportError(
+        "\n=== خطا / Error ===\n"
+        "Cannot read boundary file %r: it is not a GeoJSON file and fiona is not installed.\n"
+        "فایل مرزی خوانده نشد: فایل GeoJSON نیست یا fiona نصب نیست.\n"
+        "Install with:  pip install fiona shapely pyproj\n"
+        "or provide a GeoJSON boundary file instead.\n" % str(path)
+    )
+
 PNG_PATH = os.path.join(OUT_DIR, "fars_forecast_web.png")
 RASTER_PATH = os.path.join(OUT_DIR, "fars_forecast_raster.tif")
 METADATA_PATH = os.path.join(OUT_DIR, "forecast_metadata.json")
@@ -182,8 +271,7 @@ def create_web_gradient(raster_path, fars_boundary_master, master_transform=None
        interpolation; no alpha bleed).
     3) Rasterize province boundary DIRECTLY into final PNG dimensions using
        the scaled affine transform:
-_transform = Affine(a*sx, b*sx, c, d target_height
-         target_transform = Affine(a*sx, b*sx, c, d*sy, e*sy, f)
+           target_transform = Affine(a*sx, b*sx, c, d*sy, e*sy, f)
        in the master CRS with all_touched=False.
     4) Alpha = ALPHA_PROVINCE (235) where (province mask AND finite risk) else 0.
     """
@@ -234,9 +322,7 @@ _transform = Affine(a*sx, b*sx, c, d target_height
 
     geom, geom_crs = get_fars_geometry(fars_boundary_master)
     if geom_crs != master_crs:
-        import geopandas as gpd
-        g = gpd.GeoSeries([geom], crs=geom_crs).to_crs(master_crs)
-        geom = g.iloc[0]
+        geom = reproject_geom(geom, geom_crs, master_crs)
 
     # Rasterize geometry DIRECTLY at final image shape (H, W)
     province_mask = rasterize(
@@ -295,7 +381,6 @@ def build_metadata(info, extra=None):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    import geopandas as gpd
 
     candidates = [
         "/mnt/data/fars.geojson", "/mnt/data/fars_boundary.geojson",
@@ -304,7 +389,7 @@ def main():
     fars_boundary_master = None
     for c in candidates:
         if os.path.exists(c):
-            fars_boundary_master = gpd.read_file(c)
+            fars_boundary_master = load_boundary_file(c)
             break
 
     if fars_boundary_master is None:
@@ -314,15 +399,12 @@ def main():
             (52.0, 27.5), (55.5, 27.5), (55.0, 31.5),
             (51.5, 31.5), (50.5, 29.5), (52.0, 27.5)
         ])
-        fars_boundary_master = gpd.GeoDataFrame(
-            {"name": ["Fars"]}, geometry=[poly], crs="EPSG:4326"
-        )
+        fars_boundary_master = Boundary(poly, "EPSG:4326")
 
     from rasterio.features import geometry_mask
     geom, geom_crs = get_fars_geometry(fars_boundary_master)
     proj_crs = "EPSG:32639"
-    gseries = gpd.GeoSeries([geom], crs=geom_crs).to_crs(proj_crs)
-    geom_proj = gseries.iloc[0]
+    geom_proj = reproject_geom(geom, geom_crs, proj_crs)
 
     minx, miny, maxx, maxy = geom_proj.bounds
     res = 1000.0
