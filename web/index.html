@@ -1,0 +1,455 @@
+```html
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>
+        سامانه پیش‌بینی خطر حریق استان فارس
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    >
+
+    <style>
+        html,
+        body,
+        #map {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family:
+                Tahoma,
+                Arial,
+                sans-serif;
+            overflow: hidden;
+            background: #eef1f3;
+        }
+
+        #map {
+            background: #dfe5e8;
+        }
+
+        .panel {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            z-index: 1000;
+
+            width: 260px;
+            max-width: calc(100vw - 28px);
+
+            box-sizing: border-box;
+
+            background: rgba(
+                255,
+                255,
+                255,
+                0.95
+            );
+
+            border-radius: 14px;
+
+            padding: 15px 16px;
+
+            box-shadow:
+                0 4px 18px
+                rgba(
+                    0,
+                    0,
+                    0,
+                    0.18
+                );
+
+            backdrop-filter: blur(4px);
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 700;
+            color: #222;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .status {
+            font-size: 12px;
+            line-height: 1.9;
+            color: #333;
+        }
+
+        .status strong {
+            color: #111;
+        }
+
+        .gradient {
+            width: 100%;
+            height: 15px;
+
+            margin-top: 11px;
+            margin-bottom: 5px;
+
+            border-radius: 8px;
+
+            background:
+                linear-gradient(
+                    to left,
+                    #880e0e 0%,
+                    #e53935 20%,
+                    #fb8c00 40%,
+                    #fdd835 60%,
+                    #9ccc65 80%,
+                    #2e7d32 100%
+                );
+        }
+
+        .scale {
+            display: flex;
+            justify-content: space-between;
+
+            font-size: 10px;
+            color: #444;
+        }
+
+        .class-box {
+            margin-top: 10px;
+            padding-top: 9px;
+
+            border-top: 1px solid #ddd;
+
+            font-size: 11px;
+            line-height: 1.8;
+        }
+
+        .loading {
+            color: #666;
+        }
+
+        .error {
+            color: #b71c1c;
+        }
+
+        .leaflet-control-attribution {
+            font-size: 9px;
+        }
+
+        @media (max-width: 600px) {
+            .panel {
+                top: 10px;
+                right: 10px;
+                width: 220px;
+                padding: 12px;
+            }
+
+            .title {
+                font-size: 15px;
+            }
+
+            .subtitle,
+            .status {
+                font-size: 11px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="map"></div>
+
+    <div class="panel">
+
+        <div class="title">
+            خطر حریق استان فارس
+        </div>
+
+        <div class="subtitle">
+            سامانه پیش‌بینی و پهنه‌بندی
+        </div>
+
+        <div
+            class="status"
+            id="status"
+        >
+            <span class="loading">
+                در حال دریافت داده...
+            </span>
+        </div>
+
+        <div class="gradient"></div>
+
+        <div class="scale">
+            <span>100</span>
+            <span>80</span>
+            <span>60</span>
+            <span>40</span>
+            <span>20</span>
+            <span>0</span>
+        </div>
+
+        <div class="class-box">
+            0–20 : خیلی کم<br>
+            20–40 : کم<br>
+            40–60 : متوسط<br>
+            60–80 : زیاد<br>
+            80–100 : بحرانی
+        </div>
+
+    </div>
+
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    ></script>
+
+    <script>
+        const map = L.map(
+            "map",
+            {
+                zoomControl: true
+            }
+        );
+
+        L.tileLayer(
+            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {
+                maxZoom: 18,
+                attribution:
+                    "&copy; OpenStreetMap contributors"
+            }
+        ).addTo(map);
+
+        function setStatus(html) {
+            document.getElementById(
+                "status"
+            ).innerHTML = html;
+        }
+
+        function formatNumber(value) {
+            if (
+                value === null ||
+                value === undefined ||
+                !Number.isFinite(
+                    Number(value)
+                )
+            ) {
+                return "نامشخص";
+            }
+
+            return Number(value).toFixed(2);
+        }
+
+        Promise.all(
+            [
+                fetch(
+                    "fars.geojson",
+                    {
+                        cache: "no-store"
+                    }
+                ).then(
+                    response => {
+                        if (!response.ok) {
+                            throw new Error(
+                                "Boundary file could not be loaded."
+                            );
+                        }
+
+                        return response.json();
+                    }
+                ),
+
+                fetch(
+                    "generated/fire_risk_latest.json",
+                    {
+                        cache: "no-store"
+                    }
+                ).then(
+                    response => {
+                        if (!response.ok) {
+                            throw new Error(
+                                "Forecast metadata could not be loaded."
+                            );
+                        }
+
+                        return response.json();
+                    }
+                )
+            ]
+        )
+
+        .then(
+            ([boundary, metadata]) => {
+
+                const boundaryLayer =
+                    L.geoJSON(
+                        boundary,
+                        {
+                            style: {
+                                color: "#333",
+                                weight: 2,
+                                opacity: 0.9,
+                                fill: false
+                            }
+                        }
+                    ).addTo(map);
+
+                const webBounds =
+                    metadata.web &&
+                    metadata.web.bounds;
+
+                if (
+                    !Array.isArray(
+                        webBounds
+                    ) ||
+                    webBounds.length !== 4
+                ) {
+                    throw new Error(
+                        "Web bounds are missing from metadata."
+                    );
+                }
+
+                const imageBounds = [
+                    [
+                        webBounds[1],
+                        webBounds[0]
+                    ],
+                    [
+                        webBounds[3],
+                        webBounds[2]
+                    ]
+                ];
+
+                L.imageOverlay(
+                    "generated/fire_risk_latest.png",
+                    imageBounds,
+                    {
+                        opacity: 0.84,
+                        interactive: false
+                    }
+                ).addTo(map);
+
+                map.fitBounds(
+                    boundaryLayer.getBounds(),
+                    {
+                        padding: [
+                            20,
+                            20
+                        ]
+                    }
+                );
+
+                const statistics =
+                    metadata.statistics ||
+                    {};
+
+                const grid =
+                    metadata.grid ||
+                    {};
+
+                const forecastDate =
+                    metadata.fwi_target_date ||
+                    "نامشخص";
+
+                const meanValue =
+                    formatNumber(
+                        statistics.mean
+                    );
+
+                const minValue =
+                    formatNumber(
+                        statistics.min
+                    );
+
+                const maxValue =
+                    formatNumber(
+                        statistics.max
+                    );
+
+                const resolutionX =
+                    formatNumber(
+                        grid.resolution_x
+                    );
+
+                const resolutionY =
+                    formatNumber(
+                        grid.resolution_y
+                    );
+
+                setStatus(
+                    "منبع FWI: " +
+                    "<strong>ECMWF / GWIS</strong>" +
+                    "<br>" +
+                    "تاریخ پیش‌بینی: " +
+                    "<strong>" +
+                    forecastDate +
+                    "</strong>" +
+                    "<br>" +
+                    "شبکه محاسباتی: " +
+                    "<strong>" +
+                    resolutionX +
+                    " × " +
+                    resolutionY +
+                    "</strong>" +
+                    "<br>" +
+                    "کمینه: " +
+                    "<strong>" +
+                    minValue +
+                    "</strong>" +
+                    "<br>" +
+                    "بیشینه: " +
+                    "<strong>" +
+                    maxValue +
+                    "</strong>" +
+                    "<br>" +
+                    "میانگین: " +
+                    "<strong>" +
+                    meanValue +
+                    "</strong>"
+                );
+            }
+        )
+
+        .catch(
+            error => {
+
+                console.error(
+                    error
+                );
+
+                setStatus(
+                    '<span class="error">' +
+                    'داده پیش‌بینی هنوز آماده نیست.' +
+                    "</span>"
+                );
+
+                map.setView(
+                    [
+                        29.60,
+                        53.20
+                    ],
+                    7
+                );
+            }
+        );
+    </script>
+
+</body>
+
+</html>
+```
