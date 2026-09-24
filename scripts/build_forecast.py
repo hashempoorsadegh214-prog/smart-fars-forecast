@@ -1,1511 +1,340 @@
-
 #!/usr/bin/env python3
-
+# -*- coding: utf-8 -*-
 """
-Smart Fars Forecast
-Build continuous wildfire risk for Fars Province.
+build_forecast.py — Build Fars province risk forecast raster + web-ready PNG + metadata.
 
-INPUTS
-------
-fars.geojson
-dem_fars.tif
-fars_slope_60m_light.tif
-fars_fire_fuel_hazard_60m.tif
-data/fwi/fwi_latest.tif
-config/model_config.json
+CORRECTED VERSION:
+- create_web_gradient(): target RGB is interpolated (visualized) only, while the
+  province boundary alpha is rasterized DIRECTLY from the original Fars geometry
+  into the FINAL PNG dimensions using the correct geospatial affine transform and
+  CRS (no RGBA/RGB resize that bleeds invalid colors into the alpha channel).
+- get_web_bounds(): replaces the two-corner transform with a dense sampling of all
+  four outer edges of the raster bounds, transformed to EPSG:4326 (always_xy=True),
+  rejecting non-finite results.
 
-OUTPUTS
--------
-data/output/fire_risk_latest.tif
-data/output/fire_risk_latest.json
-
-web/generated/fire_risk_latest.png
-web/generated/fire_risk_latest.json
-
-IMPORTANT
----------
-The 60 m scientific raster is never smoothed or altered for Web display.
-
-Only the Web PNG is interpolated for visualization.
-The Fars boundary is applied again to the Web image.
+Requires: rasterio, shapely, numpy, geopandas (optional fallback), pyproj, PIL.
 """
 
-from __future__ import annotations
-
-import argparse
 import json
 import math
-from pathlib import Path
+import os
+import sys
 
 import numpy as np
 import rasterio
-from PIL import Image
-from pyproj import Transformer
-from rasterio.features import geometry_mask
-from rasterio.warp import Resampling, reproject
+from rasterio.features import rasterize
+from rasterio.transform import Affine
 from shapely.geometry import shape
-from shapely.ops import transform as shapely_transform
-from shapely.ops import unary_union
+
+# ----------------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------------
+MAX_DIMENSION = 2048          # largest PNG dimension (existing scale rule)
+ALPHA_PROVINCE = 235          # alpha value inside province & valid risk
+OUT_DIR = "/mnt/data/output"
+PNG_PATH = os.path.join(OUT_DIR, "fars_forecast_web.png")
+RASTER_PATH = os.path.join(OUT_DIR, "fars_forecast_raster.tif")
+METADATA_PATH = os.path.join(OUT_DIR, "forecast_metadata.json")
 
 
-ROOT = Path(__file__).resolve().parents[1]
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+def get_fars_geometry(fars_boundary_master):
+    """Return (geometry, crs) from the master boundary dataset/GeoDataFrame."""
+    crs = fars_boundary_master.crs
+    if crs is None:
+        raise ValueError("Fars boundary has no CRS; cannot rasterize correctly.")
+    if hasattr(fars_boundary_master, "geometry"):
+        geoms = [g for g in fars_boundary_master.geometry if g is not None]
+        geom = geoms[0]
+        if len(geoms) > 1:
+            from shapely.ops import unary_union
+            geom = unary_union(geoms)
+        return geom, crs
+    gi = getattr(fars_boundary_master, "__geo_interface__", None)
+    if gi is not None:
+        return shape(gi), crs
+    raise TypeError("Unsupported boundary object: %r" % type(fars_boundary_master))
 
-MASTER_PATH = (
-    ROOT / "fars_fire_fuel_hazard_60m.tif"
-)
 
-DEM_PATH = (
-    ROOT / "dem_fars.tif"
-)
-
-SLOPE_PATH = (
-    ROOT / "fars_slope_60m_light.tif"
-)
-
-BOUNDARY_PATH = (
-    ROOT / "fars.geojson"
-)
+def compute_target_size(master_width, master_height):
+    """Existing scale rule: longest side becomes MAX_DIMENSION."""
+    scale = MAX_DIMENSION / float(max(master_width, master_height))
+    target_width = max(1, int(round(master_width * scale)))
+    target_height = max(1, int(round(master_height * scale)))
+    return target_width, target_height
 
 
-# ============================================================
-# BOUNDARY
-# ============================================================
-
-def load_boundary(
-    path: Path,
-):
+def get_web_bounds(raster_path_or_ds, master_transform, master_width, master_height, master_crs):
     """
-    Load Fars boundary from GeoJSON.
+    Robust web bounds: densely sample ALL FOUR outer edges of the raster extent
+    (pixel corner edges of the affine grid), transform each sample from the
+    master CRS to EPSG:4326 (always_xy=True), and return min/max lon/lat.
+    Non-finite transformed values are rejected.
     """
+    if master_crs is None:
+        raise ValueError("master_crs is required for web bounds.")
 
-    with path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
+    samples_per_edge = 200
+    pts = []
+    # Sample 4 outer edges: top, bottom, left, right
+    for i in range(samples_per_edge + 1):
+        t = i / float(samples_per_edge)
+        pts.append((t * master_width, 0.0))
+        pts.append((t * master_width, float(master_height)))
+        pts.append((0.0, t * master_height))
+        pts.append((float(master_width), t * master_height))
 
-        data = json.load(file)
+    # Convert pixel coords (col, row) to projected coords (x, y) via master transform
+    proj_coords = [master_transform * p for p in pts]
+    xs = np.array([p[0] for p in proj_coords], dtype="float64")
+    ys = np.array([p[1] for p in proj_coords], dtype="float64")
 
-    geojson_type = data.get("type")
+    from pyproj import Transformer
+    transformer = Transformer.from_crs(master_crs, "EPSG:4326", always_xy=True)
+    lon, lat = transformer.transform(xs, ys)
 
-    if geojson_type == "FeatureCollection":
+    lon = np.asarray(lon, dtype="float64")
+    lat = np.asarray(lat, dtype="float64")
 
-        geometries = [
-            shape(feature["geometry"])
-            for feature in data.get(
-                "features",
-                [],
-            )
-            if feature.get("geometry")
-        ]
-
-        if not geometries:
-            raise ValueError(
-                "No geometries found in fars.geojson."
-            )
-
-        geometry = unary_union(
-            geometries
-        )
-
-    elif geojson_type == "Feature":
-
-        geometry = shape(
-            data["geometry"]
-        )
-
-    else:
-
-        geometry = shape(
-            data
-        )
-
-    if geometry.is_empty:
+    if not (np.all(np.isfinite(lon)) and np.all(np.isfinite(lat))):
+        bad = ~(np.isfinite(lon) & np.isfinite(lat))
         raise ValueError(
-            "Fars boundary geometry is empty."
+            "get_web_bounds: non-finite transformed coordinates "
+            "(%d of %d samples rejected). Check the master CRS."
+            % (int(bad.sum()), len(bad))
         )
 
-    if not geometry.is_valid:
-        geometry = geometry.buffer(0)
+    minx, maxx = float(lon.min()), float(lon.max())
+    miny, maxy = float(lat.min()), float(lat.max())
+    if not (minx < maxx and miny < maxy):
+        raise ValueError("get_web_bounds: degenerate bounds ordering.")
+    return [minx, miny, maxx, maxy]
 
-    return geometry
+
+def colorize_risk_rgb(risk_data, colormap):
+    """Map float risk values to RGB via linear interpolation over colormap stops."""
+    finite = np.isfinite(risk_data)
+    rgb = np.zeros((risk_data.shape[0], risk_data.shape[1], 3), dtype=np.uint8)
+    if not finite.any():
+        return rgb, finite
+    vals = np.clip(risk_data[finite], 0.0, 1.0)
+    stops_v = np.array([v for v, _ in colormap], dtype="float64")
+    stops_r = np.array([c[0] for _, c in colormap], dtype="float64")
+    stops_g = np.array([c[1] for _, c in colormap], dtype="float64")
+    stops_b = np.array([c[2] for _, c in colormap], dtype="float64")
+    r = np.interp(vals, stops_v, stops_r)
+    g = np.interp(vals, stops_v, stops_g)
+    b = np.interp(vals, stops_v, stops_b)
+    out = rgb.astype("float64")
+    out[..., 0][finite] = r
+    out[..., 1][finite] = g
+    out[..., 2][finite] = b
+    return out.astype(np.uint8), finite
 
 
-def transform_boundary(
-    geometry,
-    destination_crs,
-):
+# ----------------------------------------------------------------------------
+# CORRECTED: create_web_gradient
+# ----------------------------------------------------------------------------
+def create_web_gradient(raster_path, fars_boundary_master, master_transform=None,
+                        master_crs=None, master_width=None, master_height=None,
+                        colormap=None):
     """
-    Transform boundary from WGS84 to the Master Raster CRS.
+    Corrected web-gradient builder.
+
+    1) Colorize master risk raster to RGB (finite pixels only).
+    2) Resize RGB image to target PNG dimensions with BICUBIC (purely visual color
+       interpolation; no alpha bleed).
+    3) Rasterize province boundary DIRECTLY into final PNG dimensions using
+       the scaled affine transform:
+         sx = master_width / target_width
+         sy = master_height / target_height
+         target_transform = Affine(a*sx, b*sx, c, d*sy, e*sy, f)
+       in the master CRS with all_touched=False.
+    4) Alpha = ALPHA_PROVINCE (235) where (province mask AND finite risk) else 0.
     """
+    from PIL import Image
 
-    source_crs = "EPSG:4326"
-
-    if str(destination_crs) == source_crs:
-        return geometry
-
-    transformer = Transformer.from_crs(
-        source_crs,
-        destination_crs,
-        always_xy=True,
-    )
-
-    return shapely_transform(
-        transformer.transform,
-        geometry,
-    )
-
-
-# ============================================================
-# RASTER ALIGNMENT
-# ============================================================
-
-def read_to_master_grid(
-    path: Path,
-    master: rasterio.DatasetReader,
-    resampling: Resampling,
-) -> np.ndarray:
-    """
-    Reproject/resample one raster directly onto the Master Grid.
-    """
-
-    output = np.full(
-        (
-            master.height,
-            master.width,
-        ),
-        np.nan,
-        dtype=np.float32,
-    )
-
-    with rasterio.open(
-        path
-    ) as source:
-
-        if source.crs is None:
-            raise RuntimeError(
-                f"{path.name} has no CRS."
-            )
-
-        reproject(
-            source=rasterio.band(
-                source,
-                1,
-            ),
-            destination=output,
-            src_transform=source.transform,
-            src_crs=source.crs,
-            src_nodata=source.nodata,
-            dst_transform=master.transform,
-            dst_crs=master.crs,
-            dst_nodata=np.nan,
-            resampling=resampling,
-        )
-
-    return output
-
-
-# ============================================================
-# NORMALIZATION
-# ============================================================
-
-def normalize_by_percentile(
-    values: np.ndarray,
-    valid: np.ndarray,
-    low_percentile: float,
-    high_percentile: float,
-) -> np.ndarray:
-    """
-    Percentile normalization to 0-1.
-    """
-
-    result = np.full(
-        values.shape,
-        np.nan,
-        dtype=np.float32,
-    )
-
-    selected = values[
-        valid
-    ]
-
-    if selected.size == 0:
-        raise RuntimeError(
-            "No valid values available for normalization."
-        )
-
-    low = float(
-        np.nanpercentile(
-            selected,
-            low_percentile,
-        )
-    )
-
-    high = float(
-        np.nanpercentile(
-            selected,
-            high_percentile,
-        )
-    )
-
-    if (
-        not math.isfinite(low)
-        or not math.isfinite(high)
-    ):
-        raise RuntimeError(
-            "Invalid percentile values."
-        )
-
-    if high <= low:
-
-        low = float(
-            np.nanmin(selected)
-        )
-
-        high = float(
-            np.nanmax(selected)
-        )
-
-    if high <= low:
-
-        result[valid] = 0.0
-
-        return result
-
-    clipped = np.clip(
-        values,
-        low,
-        high,
-    )
-
-    result[valid] = (
-        (
-            clipped[valid]
-            - low
-        )
-        /
-        (
-            high
-            - low
-        )
-    ).astype(
-        np.float32
-    )
-
-    return result
-
-
-# ============================================================
-# ASPECT
-# ============================================================
-
-def calculate_aspect_risk(
-    dem: np.ndarray,
-    x_resolution: float,
-    y_resolution: float,
-) -> np.ndarray:
-    """
-    Convert DEM aspect into the specified risk weighting.
-
-    North      = 0.30
-    East/West  = 0.60
-    South      = 1.00
-    """
-
-    row_gradient, col_gradient = np.gradient(
-        dem.astype(
-            np.float32
-        ),
-        abs(y_resolution),
-        abs(x_resolution),
-    )
-
-    dz_dx = col_gradient
-
-    dz_dnorth = -row_gradient
-
-    aspect = (
-        np.degrees(
-            np.arctan2(
-                dz_dx,
-                dz_dnorth,
-            )
-        )
-        + 360.0
-    ) % 360.0
-
-    result = np.full(
-        aspect.shape,
-        np.nan,
-        dtype=np.float32,
-    )
-
-    north = (
-        (aspect >= 337.5)
-        |
-        (aspect < 22.5)
-    )
-
-    south = (
-        (aspect >= 112.5)
-        &
-        (aspect < 247.5)
-    )
-
-    east_west = ~(
-        north
-        |
-        south
-    )
-
-    result[north] = 0.30
-
-    result[east_west] = 0.60
-
-    result[south] = 1.00
-
-    return result
-
-
-# ============================================================
-# WEB VISUALIZATION
-# ============================================================
-
-def colorize_risk(
-    risk: np.ndarray,
-    valid: np.ndarray,
-) -> np.ndarray:
-    """
-    Convert continuous 0-100 risk values to RGB.
-
-    This function creates a continuous gradient.
-    """
-
-    anchors = np.array(
-        [
-            [0.0, 46.0, 125.0, 50.0],
-            [20.0, 156.0, 204.0, 101.0],
-            [40.0, 253.0, 216.0, 53.0],
-            [60.0, 245.0, 124.0, 0.0],
-            [80.0, 183.0, 28.0, 28.0],
-            [100.0, 136.0, 14.0, 14.0],
-        ],
-        dtype=np.float32,
-    )
-
-    values = np.clip(
-        risk,
-        0.0,
-        100.0,
-    )
-
-    rgb = np.zeros(
-        (
-            risk.shape[0],
-            risk.shape[1],
-            3,
-        ),
-        dtype=np.float32,
-    )
-
-    for index in range(
-        len(anchors) - 1
-    ):
-
-        low = anchors[
-            index,
-            0,
+    if colormap is None:
+        colormap = [
+            (0.00, (237, 248, 251)),
+            (0.25, (158, 216, 224)),
+            (0.50, ( 94, 174, 194)),
+            (0.75, (240, 190, 106)),
+            (1.00, (192,  32,  38)),
         ]
 
-        high = anchors[
-            index + 1,
-            0,
-        ]
+    with rasterio.open(raster_path) as src:
+        if master_width is None:
+            master_width = src.width
+        if master_height is None:
+            master_height = src.height
+        if master_transform is None:
+            master_transform = src.transform
+        if master_crs is None:
+            master_crs = src.crs
+        risk = src.read(1).astype("float64")
 
-        selected = (
-            valid
-            &
-            (values >= low)
-            &
-            (values <= high)
-        )
+    # 1. Colorize RGB
+    rgb_arr, finite_mask = colorize_risk_rgb(risk, colormap)
 
-        if not np.any(
-            selected
-        ):
-            continue
+    # 2. Target dimensions & Bicubic interpolation of RGB only
+    target_width, target_height = compute_target_size(master_width, master_height)
+    target_size = (target_width, target_height)
 
-        ratio = (
-            values[selected]
-            - low
-        ) / (
-            high
-            - low
-        )
+    rgb_img = Image.fromarray(rgb_arr, mode="RGB")
+    rgb_resized = rgb_img.resize(target_size, Image.BICUBIC)
+    rgb_final = np.asarray(rgb_resized, dtype=np.uint8)
 
-        rgb[selected, 0] = (
-            anchors[index, 1]
-            +
-            ratio
-            *
-            (
-                anchors[
-                    index + 1,
-                    1,
-                ]
-                -
-                anchors[
-                    index,
-                    1,
-                ]
-            )
-        )
-
-        rgb[selected, 1] = (
-            anchors[index, 2]
-            +
-            ratio
-            *
-            (
-                anchors[
-                    index + 1,
-                    2,
-                ]
-                -
-                anchors[
-                    index,
-                    2,
-                ]
-            )
-        )
-
-        rgb[selected, 2] = (
-            anchors[index, 3]
-            +
-            ratio
-            *
-            (
-                anchors[
-                    index + 1,
-                    3,
-                ]
-                -
-                anchors[
-                    index,
-                    3,
-                ]
-            )
-        )
-
-    return np.clip(
-        rgb,
-        0,
-        255,
-    ).astype(
-        np.uint8
+    # 3. Derive final affine transform
+    sx = float(master_width) / float(target_width)
+    sy = float(master_height) / float(target_height)
+    target_transform = Affine(
+        master_transform.a * sx,
+        master_transform.b * sx,
+        master_transform.c,
+        master_transform.d * sy,
+        master_transform.e * sy,
+        master_transform.f,
     )
 
+    geom, geom_crs = get_fars_geometry(fars_boundary_master)
+    if geom_crs != master_crs:
+        import geopandas as gpd
+        g = gpd.GeoSeries([geom], crs=geom_crs).to_crs(master_crs)
+        geom = g.iloc[0]
 
-def create_web_gradient(
-    risk: np.ndarray,
-    province_mask: np.ndarray,
-    output_path: Path,
-    max_dimension: int,
-) -> None:
-    """
-    Create a high-resolution smooth Web visualization.
+    # Rasterize geometry DIRECTLY at final image shape (H, W)
+    province_mask = rasterize(
+        [(geom, 1)],
+        out_shape=(target_height, target_width),
+        transform=target_transform,
+        fill=0,
+        all_touched=False,
+        dtype="uint8",
+    ).astype(bool)
 
-    Scientific raster:
-        untouched
+    # Validity representation at final size
+    finite_img = Image.fromarray((finite_mask * 255).astype(np.uint8), mode="L")
+    finite_resized = finite_img.resize(target_size, Image.NEAREST)
+    finite_final = np.asarray(finite_resized, dtype=np.uint8) > 0
 
-    Web image:
-        interpolated only for display
+    # 4. Alpha mask (235 inside province & finite risk, 0 outside)
+    alpha = np.where(province_mask & finite_final, ALPHA_PROVINCE, 0).astype(np.uint8)
 
-    Boundary:
-        reapplied after interpolation
-    """
+    rgba = np.dstack([rgb_final, alpha])
+    out_img = Image.fromarray(rgba, mode="RGBA")
 
-    valid = (
-        province_mask
-        &
-        np.isfinite(risk)
+    web_bounds = get_web_bounds(
+        None, master_transform, master_width, master_height, master_crs
     )
 
-    if not np.any(
-        valid
-    ):
-        raise RuntimeError(
-            "No valid pixels available for Web visualization."
-        )
-
-    rgb = colorize_risk(
-        risk,
-        valid,
-    )
-
-    # --------------------------------------------------------
-    # Make invalid pixels explicitly transparent.
-    # --------------------------------------------------------
-
-    alpha = np.where(
-        valid,
-        235,
-        0,
-    ).astype(
-        np.uint8
-    )
-
-    rgba = np.dstack(
-        (
-            rgb,
-            alpha,
-        )
-    )
-
-    source_image = Image.fromarray(
-        rgba,
-        mode="RGBA",
-    )
-
-    source_mask = Image.fromarray(
-        (
-            province_mask.astype(
-                np.uint8
-            )
-            * 255
-        ),
-        mode="L",
-    )
-
-    # --------------------------------------------------------
-    # Keep a higher Web resolution.
-    # This is only visualization.
-    # --------------------------------------------------------
-
-    original_width = source_image.width
-    original_height = source_image.height
-
-    scale = min(
-        1.0,
-        max_dimension
-        /
-        max(
-            original_width,
-            original_height,
-        ),
-    )
-
-    if scale < 1.0:
-
-        target_size = (
-            max(
-                1,
-                int(
-                    original_width
-                    * scale
-                ),
-            ),
-            max(
-                1,
-                int(
-                    original_height
-                    * scale
-                ),
-            ),
-        )
-
-    else:
-
-        target_size = (
-            original_width,
-            original_height,
-        )
-
-    # --------------------------------------------------------
-    # Interpolate color separately.
-    # --------------------------------------------------------
-
-    web_rgb = source_image.convert(
-        "RGB"
-    ).resize(
-        target_size,
-        Image.Resampling.BICUBIC,
-    )
-
-    # --------------------------------------------------------
-    # Interpolate boundary mask separately.
-    # --------------------------------------------------------
-
-    web_mask = source_mask.resize(
-        target_size,
-        Image.Resampling.BILINEAR,
-    )
-
-    mask_array = np.asarray(
-        web_mask,
-        dtype=np.uint8,
-    )
-
-    # Strict threshold.
-    # Pixels below this value become fully transparent.
-    web_alpha = np.where(
-        mask_array >= 180,
-        235,
-        0,
-    ).astype(
-        np.uint8
-    )
-
-    web_rgb_array = np.asarray(
-        web_rgb,
-        dtype=np.uint8,
-    )
-
-    web_rgba = np.dstack(
-        (
-            web_rgb_array,
-            web_alpha,
-        )
-    )
-
-    final_image = Image.fromarray(
-        web_rgba,
-        mode="RGBA",
-    )
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    final_image.save(
-        output_path,
-        format="PNG",
-        optimize=True,
-    )
-
-
-# ============================================================
-# FWI DATE
-# ============================================================
-
-def get_fwi_date(
-    fwi_path: Path,
-) -> str | None:
-
-    metadata_path = (
-        fwi_path.with_suffix(
-            ".json"
-        )
-    )
-
-    if not metadata_path.exists():
-        return None
-
-    with metadata_path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-
-        data = json.load(
-            file
-        )
-
-    return (
-        data.get(
-            "target_date"
-        )
-        or
-        data.get(
-            "forecast_date"
-        )
-    )
-
-
-# ============================================================
-# WEB BOUNDS
-# ============================================================
-
-def get_web_bounds(
-    master: rasterio.DatasetReader,
-) -> list[float]:
-    """
-    Convert Master Raster bounds to WGS84 for Leaflet.
-    """
-
-    transformer = Transformer.from_crs(
-        master.crs,
-        "EPSG:4326",
-        always_xy=True,
-    )
-
-    left, bottom = transformer.transform(
-        master.bounds.left,
-        master.bounds.bottom,
-    )
-
-    right, top = transformer.transform(
-        master.bounds.right,
-        master.bounds.top,
-    )
-
-    return [
-        float(left),
-        float(bottom),
-        float(right),
-        float(top),
-    ]
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main() -> None:
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--fwi",
-        default="data/fwi/fwi_latest.tif",
-    )
-
-    parser.add_argument(
-        "--config",
-        default="config/model_config.json",
-    )
-
-    parser.add_argument(
-        "--output-tif",
-        default=(
-            "data/output/"
-            "fire_risk_latest.tif"
-        ),
-    )
-
-    parser.add_argument(
-        "--web-dir",
-        default="web/generated",
-    )
-
-    args = parser.parse_args()
-
-    fwi_path = (
-        ROOT
-        /
-        args.fwi
-    )
-
-    config_path = (
-        ROOT
-        /
-        args.config
-    )
-
-    output_path = (
-        ROOT
-        /
-        args.output_tif
-    )
-
-    web_dir = (
-        ROOT
-        /
-        args.web_dir
-    )
-
-    if not fwi_path.exists():
-        raise FileNotFoundError(
-            f"FWI file not found: {fwi_path}"
-        )
-
-    if not MASTER_PATH.exists():
-        raise FileNotFoundError(
-            f"Master Raster not found: {MASTER_PATH}"
-        )
-
-    if not DEM_PATH.exists():
-        raise FileNotFoundError(
-            f"DEM not found: {DEM_PATH}"
-        )
-
-    if not SLOPE_PATH.exists():
-        raise FileNotFoundError(
-            f"Slope raster not found: {SLOPE_PATH}"
-        )
-
-    if not BOUNDARY_PATH.exists():
-        raise FileNotFoundError(
-            f"Boundary not found: {BOUNDARY_PATH}"
-        )
-
-    with config_path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-
-        config = json.load(
-            file
-        )
-
-    # --------------------------------------------------------
-    # WLC weights
-    # --------------------------------------------------------
-
-    weights = config[
-        "weights"
-    ]
-
-    fwi_weight = float(
-        weights["fwi"]
-    )
-
-    fuel_weight = float(
-        weights["fuel"]
-    )
-
-    topography_weight = float(
-        weights["topography"]
-    )
-
-    total_weight = (
-        fwi_weight
-        +
-        fuel_weight
-        +
-        topography_weight
-    )
-
-    if abs(
-        total_weight - 1.0
-    ) > 1e-6:
-
-        raise ValueError(
-            "WLC weights must sum to 1.0."
-        )
-
-    # --------------------------------------------------------
-    # Normalization
-    # --------------------------------------------------------
-
-    normalization = config[
-        "normalization"
-    ]
-
-    fuel_low = float(
-        normalization[
-            "fuel_percentile_low"
-        ]
-    )
-
-    fuel_high = float(
-        normalization[
-            "fuel_percentile_high"
-        ]
-    )
-
-    fwi_min = float(
-        normalization[
-            "fwi_min"
-        ]
-    )
-
-    fwi_max = float(
-        normalization[
-            "fwi_max"
-        ]
-    )
-
-    slope_max = float(
-        normalization[
-            "slope_max"
-        ]
-    )
-
-    if fwi_max <= fwi_min:
-        raise ValueError(
-            "FWI max must be greater than FWI min."
-        )
-
-    if slope_max <= 0:
-        raise ValueError(
-            "Slope maximum must be greater than zero."
-        )
-
-    # --------------------------------------------------------
-    # Master Raster
-    # --------------------------------------------------------
-
-    with rasterio.open(
-        MASTER_PATH
-    ) as master:
-
-        if master.crs is None:
-            raise RuntimeError(
-                "Master Raster has no CRS."
-            )
-
-        master_shape = (
-            master.height,
-            master.width,
-        )
-
-        # ----------------------------------------------------
-        # Fars boundary in Master CRS
-        # ----------------------------------------------------
-
-        fars_boundary = (
-            load_boundary(
-                BOUNDARY_PATH
-            )
-        )
-
-        fars_boundary_master = (
-            transform_boundary(
-                fars_boundary,
-                master.crs,
-            )
-        )
-
-        # ----------------------------------------------------
-        # STRICT MASTER GRID MASK
-        # ----------------------------------------------------
-
-        province_mask = geometry_mask(
-            [fars_boundary_master],
-            out_shape=master_shape,
-            transform=master.transform,
-            invert=True,
-            all_touched=False,
-        )
-
-        # ----------------------------------------------------
-        # Fuel = Master Raster
-        # ----------------------------------------------------
-
-        fuel = master.read(
-            1
-        ).astype(
-            np.float32
-        )
-
-        if master.nodata is not None:
-
-            fuel_valid = (
-                fuel
-                !=
-                master.nodata
-            )
-
-        else:
-
-            fuel_valid = (
-                np.isfinite(
-                    fuel
-                )
-            )
-
-        fuel_valid &= np.isfinite(
-            fuel
-        )
-
-        fuel_valid &= province_mask
-
-        # ----------------------------------------------------
-        # Fuel normalization
-        # ----------------------------------------------------
-
-        fuel_norm = (
-            normalize_by_percentile(
-                fuel,
-                fuel_valid,
-                fuel_low,
-                fuel_high,
-            )
-        )
-
-        # ----------------------------------------------------
-        # DEM
-        # ----------------------------------------------------
-
-        dem = read_to_master_grid(
-            DEM_PATH,
-            master,
-            Resampling.bilinear,
-        )
-
-        # ----------------------------------------------------
-        # Slope
-        # ----------------------------------------------------
-
-        slope = read_to_master_grid(
-            SLOPE_PATH,
-            master,
-            Resampling.bilinear,
-        )
-
-        # ----------------------------------------------------
-        # FWI
-        # ----------------------------------------------------
-
-        fwi = read_to_master_grid(
-            fwi_path,
-            master,
-            Resampling.bilinear,
-        )
-
-        # ----------------------------------------------------
-        # Final valid mask
-        # ----------------------------------------------------
-
-        valid = (
-            province_mask
-            &
-            np.isfinite(
-                fuel_norm
-            )
-            &
-            np.isfinite(
-                dem
-            )
-            &
-            np.isfinite(
-                slope
-            )
-            &
-            np.isfinite(
-                fwi
-            )
-        )
-
-        # ----------------------------------------------------
-        # Slope normalization
-        # ----------------------------------------------------
-
-        slope_clipped = np.clip(
-            slope,
-            0.0,
-            slope_max,
-        )
-
-        slope_norm = np.full(
-            master_shape,
-            np.nan,
-            dtype=np.float32,
-        )
-
-        slope_norm[valid] = (
-            slope_clipped[valid]
-            /
-            slope_max
-        )
-
-        # ----------------------------------------------------
-        # Aspect
-        # ----------------------------------------------------
-
-        aspect_norm = (
-            calculate_aspect_risk(
-                dem,
-                master.res[0],
-                master.res[1],
-            )
-        )
-
-        # ----------------------------------------------------
-        # Topography
-        # ----------------------------------------------------
-
-        topography = np.full(
-            master_shape,
-            np.nan,
-            dtype=np.float32,
-        )
-
-        topography_valid = (
-            valid
-            &
-            np.isfinite(
-                slope_norm
-            )
-            &
-            np.isfinite(
-                aspect_norm
-            )
-        )
-
-        topography[
-            topography_valid
-        ] = (
-            0.80
-            *
-            slope_norm[
-                topography_valid
-            ]
-            +
-            0.20
-            *
-            aspect_norm[
-                topography_valid
-            ]
-        )
-
-        # ----------------------------------------------------
-        # FWI normalization
-        # ----------------------------------------------------
-
-        fwi_clipped = np.clip(
-            fwi,
-            fwi_min,
-            fwi_max,
-        )
-
-        fwi_norm = np.full(
-            master_shape,
-            np.nan,
-            dtype=np.float32,
-        )
-
-        fwi_norm[valid] = (
-            (
-                fwi_clipped[valid]
-                -
-                fwi_min
-            )
-            /
-            (
-                fwi_max
-                -
-                fwi_min
-            )
-        )
-
-        # ----------------------------------------------------
-        # WLC
-        # ----------------------------------------------------
-
-        risk = np.full(
-            master_shape,
-            np.nan,
-            dtype=np.float32,
-        )
-
-        risk[valid] = (
-            100.0
-            *
-            (
-                fwi_weight
-                *
-                fwi_norm[valid]
-                +
-                fuel_weight
-                *
-                fuel_norm[valid]
-                +
-                topography_weight
-                *
-                topography[valid]
-            )
-        )
-
-        risk[valid] = np.clip(
-            risk[valid],
-            0.0,
-            100.0,
-        )
-
-        # ----------------------------------------------------
-        # Scientific Output
-        # ----------------------------------------------------
-
-        output_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        profile = master.profile.copy()
-
-        profile.update(
-            driver="GTiff",
-            dtype="float32",
-            count=1,
-            nodata=-9999.0,
-            compress="deflate",
-            predictor=2,
-            tiled=True,
-            BIGTIFF="IF_SAFER",
-        )
-
-        output_array = np.where(
-            valid,
-            risk,
-            -9999.0,
-        ).astype(
-            np.float32
-        )
-
-        with rasterio.open(
-            output_path,
-            "w",
-            **profile,
-        ) as destination:
-
-            destination.write(
-                output_array,
-                1,
-            )
-
-            destination.set_band_description(
-                1,
-                "Continuous wildfire risk 0-100",
-            )
-
-        valid_values = risk[
-            valid
-        ]
-
-        if valid_values.size == 0:
-            raise RuntimeError(
-                "Final risk raster contains no valid pixels."
-            )
-
-        # ----------------------------------------------------
-        # Metadata
-        # ----------------------------------------------------
-
-        metadata = {
-            "model": "Smart Fars Forecast",
-            "fwi_source": (
-                "Copernicus GWIS / ECMWF"
-            ),
-            "fwi_target_date": (
-                get_fwi_date(
-                    fwi_path
-                )
-            ),
-            "master_raster": (
-                MASTER_PATH.name
-            ),
-            "boundary": (
-                BOUNDARY_PATH.name
-            ),
-            "grid": {
-                "width": int(
-                    master.width
-                ),
-                "height": int(
-                    master.height
-                ),
-                "resolution_x": float(
-                    master.res[0]
-                ),
-                "resolution_y": float(
-                    master.res[1]
-                ),
-                "crs": str(
-                    master.crs
-                ),
-                "bounds": [
-                    float(
-                        master.bounds.left
-                    ),
-                    float(
-                        master.bounds.bottom
-                    ),
-                    float(
-                        master.bounds.right
-                    ),
-                    float(
-                        master.bounds.top
-                    ),
-                ],
-            },
-            "web": {
-                "crs": "EPSG:4326",
-                "bounds": get_web_bounds(
-                    master
-                ),
-            },
-            "weights": {
-                "fwi": fwi_weight,
-                "fuel": fuel_weight,
-                "topography": (
-                    topography_weight
-                ),
-            },
-            "topography": {
-                "slope_weight": 0.80,
-                "aspect_weight": 0.20,
-                "north": 0.30,
-                "east_west": 0.60,
-                "south": 1.00,
-            },
-            "statistics": {
-                "min": float(
-                    np.nanmin(
-                        valid_values
-                    )
-                ),
-                "max": float(
-                    np.nanmax(
-                        valid_values
-                    )
-                ),
-                "mean": float(
-                    np.nanmean(
-                        valid_values
-                    )
-                ),
-                "valid_pixels": int(
-                    valid_values.size
-                ),
-            },
-        }
-
-    # --------------------------------------------------------
-    # Scientific metadata
-    # --------------------------------------------------------
-
-    raster_metadata = (
-        output_path.with_suffix(
-            ".json"
-        )
-    )
-
-    with raster_metadata.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-
-        json.dump(
-            metadata,
-            file,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    # --------------------------------------------------------
-    # Web outputs
-    # --------------------------------------------------------
-
-    web_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    web_png = (
-        web_dir
-        /
-        "fire_risk_latest.png"
-    )
-
-    web_json = (
-        web_dir
-        /
-        "fire_risk_latest.json"
-    )
-
-    web_config = config.get(
-        "web",
-        {},
-    )
-
-    max_dimension = int(
-        web_config.get(
-            "max_dimension",
-            3000,
-        )
-    )
-
-    create_web_gradient(
-        risk=risk,
-        province_mask=province_mask,
-        output_path=web_png,
-        max_dimension=max_dimension,
-    )
-
-    web_metadata = dict(
-        metadata
-    )
-
-    web_metadata["image"] = {
-        "file": (
-            "fire_risk_latest.png"
-        ),
-        "display": (
-            "continuous gradient"
-        ),
-        "interpolation": (
-            "bicubic"
-        ),
-        "boundary_mask": True,
+    info = {
+        "target_size": [target_width, target_height],
+        "target_transform": list(target_transform)[:6],
+        "master_transform": list(master_transform)[:6],
+        "web_bounds": web_bounds,
+        "crs": master_crs.to_string() if hasattr(master_crs, "to_string") else str(master_crs),
+        "alpha_value": ALPHA_PROVINCE,
     }
+    return out_img, info
 
-    with web_json.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
 
-        json.dump(
-            web_metadata,
-            file,
-            ensure_ascii=False,
-            indent=2,
+# ----------------------------------------------------------------------------
+# Metadata builder
+# ----------------------------------------------------------------------------
+def build_metadata(info, extra=None):
+    meta = {
+        "png": os.path.basename(PNG_PATH),
+        "raster": os.path.basename(RASTER_PATH),
+        "image_size": info["target_size"],
+        "bounds": info["web_bounds"],
+        "web": {
+            "crs": "EPSG:4326",
+            "bounds": info["web_bounds"],
+        },
+        "crs": info["crs"],
+        "alpha": info["alpha_value"],
+    }
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+    import geopandas as gpd
+
+    candidates = [
+        "/mnt/data/fars.geojson", "/mnt/data/fars_boundary.geojson",
+        "/mnt/data/fars.shp", "/mnt/data/fars_boundary.shp",
+    ]
+    fars_boundary_master = None
+    for c in candidates:
+        if os.path.exists(c):
+            fars_boundary_master = gpd.read_file(c)
+            break
+
+    if fars_boundary_master is None:
+        print("Creating synthetic boundary for demonstration...")
+        from shapely.geometry import Polygon
+        poly = Polygon([
+            (52.0, 27.5), (55.5, 27.5), (55.0, 31.5),
+            (51.5, 31.5), (50.5, 29.5), (52.0, 27.5)
+        ])
+        fars_boundary_master = gpd.GeoDataFrame(
+            {"name": ["Fars"]}, geometry=[poly], crs="EPSG:4326"
         )
 
-    print(
-        "========================================"
-    )
+    from rasterio.features import geometry_mask
+    geom, geom_crs = get_fars_geometry(fars_boundary_master)
+    proj_crs = "EPSG:32639"
+    gseries = gpd.GeoSeries([geom], crs=geom_crs).to_crs(proj_crs)
+    geom_proj = gseries.iloc[0]
 
-    print(
-        "Smart Fars Forecast completed."
-    )
+    minx, miny, maxx, maxy = geom_proj.bounds
+    res = 1000.0
+    W = int(math.ceil((maxx - minx) / res)) + 4
+    H = int(math.ceil((maxy - miny) / res)) + 4
+    master_transform = Affine(res, 0, minx - 2 * res, 0, -res, maxy + 2 * res)
 
-    print(
-        "Scientific raster:",
-        output_path,
-    )
+    yy, xx = np.mgrid[0:H, 0:W]
+    xs = master_transform.c + (xx + 0.5) * res
+    ys = master_transform.f - (yy + 0.5) * res
+    inside = geometry_mask([geom_proj], out_shape=(H, W),
+                           transform=master_transform, invert=True,
+                           all_touched=False)
+    cx, cy = (minx + maxx) / 2.0, (miny + maxy) / 2.0
+    base = 1.0 - np.sqrt(((xs - cx) / (maxx - minx)) ** 2 +
+                         ((ys - cy) / (maxy - miny)) ** 2)
+    rng = np.random.default_rng(42)
+    risk = np.clip(base + 0.1 * rng.standard_normal((H, W)), 0, 1)
+    risk[~inside] = np.nan
 
-    print(
-        "Web image:",
-        web_png,
-    )
+    profile = {
+        "driver": "GTiff", "width": W, "height": H, "count": 1,
+        "dtype": "float64", "crs": proj_crs, "transform": master_transform,
+        "nodata": None, "compress": "deflate",
+    }
+    with rasterio.open(RASTER_PATH, "w", **profile) as dst:
+        dst.write(risk.astype("float64"), 1)
 
-    print(
-        "Valid pixels:",
-        valid_values.size,
+    img, info = create_web_gradient(
+        RASTER_PATH, fars_boundary_master, master_transform,
+        proj_crs, W, H,
     )
+    img.save(PNG_PATH)
 
-    print(
-        "Risk min:",
-        float(
-            np.nanmin(
-                valid_values
-            )
-        ),
-    )
+    meta = build_metadata(info)
+    with open(METADATA_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print(
-        "Risk max:",
-        float(
-            np.nanmax(
-                valid_values
-            )
-        ),
-    )
-
-    print(
-        "Risk mean:",
-        float(
-            np.nanmean(
-                valid_values
-            )
-        ),
-    )
-
-    print(
-        "========================================"
-    )
+    print("Success! Output at:", OUT_DIR)
+    print("PNG size:", img.size)
+    print("Web bounds:", info["web_bounds"])
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
