@@ -1,0 +1,21 @@
+{
+  "weights": {
+    "fwi": 0.45,
+    "fuel": 0.35,
+    "topography": 0.20
+  },
+  "normalization": {
+    "fuel_percentile_low": 1.0,
+    "fuel_percentile_high": 99.0,
+    "fwi_min": 0.0,
+    "fwi_max": 100.0,
+    "slope_max": 45.0
+  },
+  "topography": {
+    "slope_weight": 0.80,
+    "aspect_weight": 0.20
+  },
+  "web": {
+    "max_dimension": 1600
+  }
+}
