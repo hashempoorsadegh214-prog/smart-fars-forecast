@@ -1,0 +1,77 @@
+name: Smart Fars Forecast
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "00 18 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: smart-fars-forecast
+  cancel-in-progress: false
+
+jobs:
+
+  forecast:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Download tomorrow FWI
+        run: |
+          python scripts/download_fwi.py \
+            --boundary fars.geojson \
+            --output data/fwi/fwi_latest.tif
+
+      - name: Build wildfire forecast
+        run: |
+          python scripts/build_forecast.py \
+            --fwi data/fwi/fwi_latest.tif \
+            --config config/model_config.json \
+            --output-tif data/output/fire_risk_latest.tif \
+            --web-dir web/generated
+
+      - name: Copy boundary to Web GIS
+        run: |
+          cp fars.geojson web/fars.geojson
+
+      - name: Upload model outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: smart-fars-forecast
+          path: |
+            data/fwi/fwi_latest.tif
+            data/fwi/fwi_latest.json
+            data/output/fire_risk_latest.tif
+            data/output/fire_risk_latest.json
+          retention-days: 14
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
