@@ -32,45 +32,23 @@ from pyproj import Transformer
 from rasterio.features import geometry_mask
 from rasterio.warp import Resampling, reproject
 from shapely.geometry import shape
-from shapely.ops import (
-    transform as shapely_transform,
-    unary_union,
-)
+from shapely.ops import transform as shapely_transform
+from shapely.ops import unary_union
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
-MASTER_PATH = (
-    ROOT /
-    "fars_fire_fuel_hazard_60m.tif"
-)
-
-DEM_PATH = (
-    ROOT /
-    "dem_fars.tif"
-)
-
-SLOPE_PATH = (
-    ROOT /
-    "fars_slope_60m_light.tif"
-)
-
-BOUNDARY_PATH = (
-    ROOT /
-    "fars.geojson"
-)
+MASTER_PATH = ROOT / "fars_fire_fuel_hazard_60m.tif"
+DEM_PATH = ROOT / "dem_fars.tif"
+SLOPE_PATH = ROOT / "fars_slope_60m_light.tif"
+BOUNDARY_PATH = ROOT / "fars.geojson"
 
 
 def load_boundary(path: Path):
-    with path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-
+    with path.open("r", encoding="utf-8") as file:
         data = json.load(file)
 
     if data.get("type") == "FeatureCollection":
-
         geometries = [
             shape(feature["geometry"])
             for feature in data.get("features", [])
@@ -78,9 +56,7 @@ def load_boundary(path: Path):
         ]
 
         if not geometries:
-            raise ValueError(
-                "No geometries found in boundary."
-            )
+            raise ValueError("No geometries found in boundary.")
 
         return unary_union(geometries)
 
@@ -90,10 +66,7 @@ def load_boundary(path: Path):
     return shape(data)
 
 
-def transform_boundary(
-    geometry,
-    destination_crs,
-):
+def transform_boundary(geometry, destination_crs):
     source_crs = "EPSG:4326"
 
     if str(destination_crs) == source_crs:
@@ -116,28 +89,20 @@ def read_to_master_grid(
     master: rasterio.DatasetReader,
     resampling: Resampling,
 ) -> np.ndarray:
-
     output = np.full(
-        (
-            master.height,
-            master.width,
-        ),
+        (master.height, master.width),
         np.nan,
         dtype=np.float32,
     )
 
     with rasterio.open(path) as source:
-
         if source.crs is None:
             raise RuntimeError(
                 f"{path.name} has no CRS."
             )
 
         reproject(
-            source=rasterio.band(
-                source,
-                1,
-            ),
+            source=rasterio.band(source, 1),
             destination=output,
             src_transform=source.transform,
             src_crs=source.crs,
@@ -157,7 +122,6 @@ def normalize_by_percentile(
     low_percentile: float,
     high_percentile: float,
 ) -> np.ndarray:
-
     result = np.full(
         values.shape,
         np.nan,
@@ -194,13 +158,8 @@ def normalize_by_percentile(
         )
 
     if high <= low:
-        low = float(
-            np.nanmin(selected)
-        )
-
-        high = float(
-            np.nanmax(selected)
-        )
+        low = float(np.nanmin(selected))
+        high = float(np.nanmax(selected))
 
     if high <= low:
         result[valid] = 0.0
@@ -213,13 +172,8 @@ def normalize_by_percentile(
     )
 
     result[valid] = (
-        (
-            clipped[valid] - low
-        )
-        /
-        (
-            high - low
-        )
+        (clipped[valid] - low)
+        / (high - low)
     ).astype(np.float32)
 
     return result
@@ -230,7 +184,6 @@ def calculate_aspect_risk(
     x_resolution: float,
     y_resolution: float,
 ) -> np.ndarray:
-
     row_gradient, col_gradient = np.gradient(
         dem.astype(np.float32),
         abs(y_resolution),
@@ -258,20 +211,15 @@ def calculate_aspect_risk(
 
     north = (
         (aspect >= 337.5)
-        |
-        (aspect < 22.5)
+        | (aspect < 22.5)
     )
 
     south = (
         (aspect >= 112.5)
-        &
-        (aspect < 247.5)
+        & (aspect < 247.5)
     )
 
-    east_west = ~(
-        north |
-        south
-    )
+    east_west = ~(north | south)
 
     result[north] = 0.30
     result[east_west] = 0.60
@@ -282,10 +230,20 @@ def calculate_aspect_risk(
 
 def create_web_gradient(
     risk: np.ndarray,
-    valid: np.ndarray,
+    province_mask: np.ndarray,
     output_path: Path,
     max_dimension: int,
 ) -> None:
+    """
+    Create a smoother web preview.
+
+    Important:
+        This is ONLY for visualization.
+        The original 60 m GeoTIFF values are not changed.
+
+    The province mask is applied again after resizing so that
+    colored pixels cannot leak outside the Fars boundary.
+    """
 
     anchors = np.array(
         [
@@ -305,19 +263,23 @@ def create_web_gradient(
         100.0,
     )
 
-    rgba = np.zeros(
+    rgb = np.zeros(
         (
             risk.shape[0],
             risk.shape[1],
-            4,
+            3,
         ),
         dtype=np.uint8,
+    )
+
+    valid = (
+        province_mask
+        & np.isfinite(risk)
     )
 
     for index in range(
         len(anchors) - 1
     ):
-
         low_value = anchors[
             index,
             0,
@@ -328,132 +290,131 @@ def create_web_gradient(
             0,
         ]
 
-        red_low = anchors[
-            index,
-            1,
-        ]
-
-        green_low = anchors[
-            index,
-            2,
-        ]
-
-        blue_low = anchors[
-            index,
-            3,
-        ]
-
-        red_high = anchors[
-            index + 1,
-            1,
-        ]
-
-        green_high = anchors[
-            index + 1,
-            2,
-        ]
-
-        blue_high = anchors[
-            index + 1,
-            3,
-        ]
-
         selected = (
             valid
-            &
-            (values >= low_value)
-            &
-            (values <= high_value)
+            & (values >= low_value)
+            & (values <= high_value)
         )
 
         if not np.any(selected):
             continue
 
         ratio = (
-            values[selected]
-            - low_value
+            values[selected] - low_value
         ) / (
-            high_value
-            - low_value
+            high_value - low_value
         )
 
-        rgba[..., 0][selected] = (
-            red_low
-            +
-            ratio
-            *
-            (
-                red_high
-                - red_low
-            )
+        r1 = anchors[index, 1]
+        g1 = anchors[index, 2]
+        b1 = anchors[index, 3]
+
+        r2 = anchors[index + 1, 1]
+        g2 = anchors[index + 1, 2]
+        b2 = anchors[index + 1, 3]
+
+        rgb[..., 0][selected] = (
+            r1 + ratio * (r2 - r1)
         ).astype(np.uint8)
 
-        rgba[..., 1][selected] = (
-            green_low
-            +
-            ratio
-            *
-            (
-                green_high
-                - green_low
-            )
+        rgb[..., 1][selected] = (
+            g1 + ratio * (g2 - g1)
         ).astype(np.uint8)
 
-        rgba[..., 2][selected] = (
-            blue_low
-            +
-            ratio
-            *
-            (
-                blue_high
-                - blue_low
-            )
+        rgb[..., 2][selected] = (
+            b1 + ratio * (b2 - b1)
         ).astype(np.uint8)
 
-        rgba[..., 3][selected] = 235
+    source_image = Image.fromarray(
+        rgb,
+        mode="RGB",
+    )
 
-    image = Image.fromarray(
-        rgba,
-        mode="RGBA",
+    mask_array = (
+        province_mask.astype(np.uint8) * 255
+    )
+
+    source_mask = Image.fromarray(
+        mask_array,
+        mode="L",
     )
 
     scale = min(
         1.0,
-        max_dimension /
-        max(image.size),
+        max_dimension / max(
+            source_image.size
+        ),
     )
 
     if scale < 1.0:
-
-        new_size = (
+        target_size = (
             max(
                 1,
                 int(
-                    image.width *
-                    scale
+                    source_image.width
+                    * scale
                 ),
             ),
             max(
                 1,
                 int(
-                    image.height *
-                    scale
+                    source_image.height
+                    * scale
                 ),
             ),
         )
+    else:
+        target_size = source_image.size
 
-        image = image.resize(
-            new_size,
-            Image.Resampling.BILINEAR,
+    # Smooth only the WEB visualization.
+    # This does not modify the 60 m scientific raster.
+    web_rgb = source_image.resize(
+        target_size,
+        Image.Resampling.BICUBIC,
+    )
+
+    # Resize the province mask separately.
+    # The mask is thresholded after resizing to prevent
+    # color leakage outside the province.
+    web_mask = source_mask.resize(
+        target_size,
+        Image.Resampling.BILINEAR,
+    )
+
+    alpha_array = np.asarray(
+        web_mask,
+        dtype=np.uint8,
+    )
+
+    alpha_array = np.where(
+        alpha_array >= 128,
+        235,
+        0,
+    ).astype(np.uint8)
+
+    rgba = np.dstack(
+        (
+            np.asarray(
+                web_rgb,
+                dtype=np.uint8,
+            ),
+            alpha_array,
         )
+    )
+
+    final_image = Image.fromarray(
+        rgba,
+        mode="RGBA",
+    )
 
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    image.save(
+    final_image.save(
         output_path,
+        format="PNG",
         optimize=True,
     )
 
@@ -461,11 +422,8 @@ def create_web_gradient(
 def get_fwi_date(
     fwi_path: Path,
 ) -> str | None:
-
     metadata_path = (
-        fwi_path.with_suffix(
-            ".json"
-        )
+        fwi_path.with_suffix(".json")
     )
 
     if not metadata_path.exists():
@@ -475,20 +433,17 @@ def get_fwi_date(
         "r",
         encoding="utf-8",
     ) as file:
-
         data = json.load(file)
 
     return (
         data.get("target_date")
-        or
-        data.get("forecast_date")
+        or data.get("forecast_date")
     )
 
 
 def get_web_bounds(
     master: rasterio.DatasetReader,
 ) -> list[float]:
-
     transformer = Transformer.from_crs(
         master.crs,
         "EPSG:4326",
@@ -514,7 +469,6 @@ def get_web_bounds(
 
 
 def main() -> None:
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -539,25 +493,10 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    fwi_path = (
-        ROOT /
-        args.fwi
-    )
-
-    config_path = (
-        ROOT /
-        args.config
-    )
-
-    output_path = (
-        ROOT /
-        args.output_tif
-    )
-
-    web_dir = (
-        ROOT /
-        args.web_dir
-    )
+    fwi_path = ROOT / args.fwi
+    config_path = ROOT / args.config
+    output_path = ROOT / args.output_tif
+    web_dir = ROOT / args.web_dir
 
     if not fwi_path.exists():
         raise FileNotFoundError(
@@ -568,7 +507,6 @@ def main() -> None:
         "r",
         encoding="utf-8",
     ) as file:
-
         config = json.load(file)
 
     weights = config["weights"]
@@ -588,14 +526,11 @@ def main() -> None:
     if abs(
         (
             fwi_weight
-            +
-            fuel_weight
-            +
-            topography_weight
+            + fuel_weight
+            + topography_weight
         )
         - 1.0
     ) > 1e-6:
-
         raise ValueError(
             "WLC weights must sum to 1.0."
         )
@@ -613,15 +548,21 @@ def main() -> None:
     )
 
     fwi_min = float(
-        config["normalization"]["fwi_min"]
+        config["normalization"][
+            "fwi_min"
+        ]
     )
 
     fwi_max = float(
-        config["normalization"]["fwi_max"]
+        config["normalization"][
+            "fwi_max"
+        ]
     )
 
     slope_max = float(
-        config["normalization"]["slope_max"]
+        config["normalization"][
+            "slope_max"
+        ]
     )
 
     if fwi_max <= fwi_min:
@@ -671,8 +612,8 @@ def main() -> None:
                 fuel != master.nodata
             )
         else:
-            fuel_valid = np.isfinite(
-                fuel
+            fuel_valid = (
+                np.isfinite(fuel)
             )
 
         fuel_valid &= np.isfinite(
@@ -708,14 +649,10 @@ def main() -> None:
 
         valid = (
             province_mask
-            &
-            np.isfinite(fuel_norm)
-            &
-            np.isfinite(dem)
-            &
-            np.isfinite(slope)
-            &
-            np.isfinite(fwi)
+            & np.isfinite(fuel_norm)
+            & np.isfinite(dem)
+            & np.isfinite(slope)
+            & np.isfinite(fwi)
         )
 
         slope_clipped = np.clip(
@@ -732,16 +669,13 @@ def main() -> None:
 
         slope_norm[valid] = (
             slope_clipped[valid]
-            /
-            slope_max
+            / slope_max
         )
 
-        aspect_norm = (
-            calculate_aspect_risk(
-                dem,
-                master.res[0],
-                master.res[1],
-            )
+        aspect_norm = calculate_aspect_risk(
+            dem,
+            master.res[0],
+            master.res[1],
         )
 
         topography = np.full(
@@ -752,26 +686,20 @@ def main() -> None:
 
         topography_valid = (
             valid
-            &
-            np.isfinite(
-                slope_norm
-            )
-            &
-            np.isfinite(
-                aspect_norm
-            )
+            & np.isfinite(slope_norm)
+            & np.isfinite(aspect_norm)
         )
 
         topography[
             topography_valid
         ] = (
-            0.80 *
-            slope_norm[
+            0.80
+            * slope_norm[
                 topography_valid
             ]
             +
-            0.20 *
-            aspect_norm[
+            0.20
+            * aspect_norm[
                 topography_valid
             ]
         )
@@ -791,14 +719,12 @@ def main() -> None:
         fwi_norm[valid] = (
             (
                 fwi_clipped[valid]
-                -
-                fwi_min
+                - fwi_min
             )
             /
             (
                 fwi_max
-                -
-                fwi_min
+                - fwi_min
             )
         )
 
@@ -810,16 +736,15 @@ def main() -> None:
 
         risk[valid] = (
             100.0
-            *
-            (
-                fwi_weight *
-                fwi_norm[valid]
+            * (
+                fwi_weight
+                * fwi_norm[valid]
                 +
-                fuel_weight *
-                fuel_norm[valid]
+                fuel_weight
+                * fuel_norm[valid]
                 +
-                topography_weight *
-                topography[valid]
+                topography_weight
+                * topography[valid]
             )
         )
 
@@ -869,9 +794,7 @@ def main() -> None:
                 "Continuous wildfire risk 0-100",
             )
 
-        valid_values = risk[
-            valid
-        ]
+        valid_values = risk[valid]
 
         metadata = {
             "model": "Smart Fars Forecast",
@@ -879,9 +802,7 @@ def main() -> None:
                 "Copernicus GWIS / ECMWF"
             ),
             "fwi_target_date": (
-                get_fwi_date(
-                    fwi_path
-                )
+                get_fwi_date(fwi_path)
             ),
             "master_raster": (
                 MASTER_PATH.name
@@ -986,20 +907,20 @@ def main() -> None:
     )
 
     web_png = (
-        web_dir /
-        "fire_risk_latest.png"
+        web_dir
+        / "fire_risk_latest.png"
     )
 
     web_json = (
-        web_dir /
-        "fire_risk_latest.json"
+        web_dir
+        / "fire_risk_latest.json"
     )
 
     create_web_gradient(
-        risk,
-        valid,
-        web_png,
-        int(
+        risk=risk,
+        province_mask=province_mask,
+        output_path=web_png,
+        max_dimension=int(
             config["web"][
                 "max_dimension"
             ]
