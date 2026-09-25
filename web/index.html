@@ -4,1544 +4,523 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
 <title>پیش‌بینی ریسک آتش‌سوزی استان فارس</title>
 
-<link rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""/>
-
 <style>
-
   :root{
-    --bg:#0f172a;
-    --panel:#1e293b;
-    --panel2:#273449;
-    --text:#e2e8f0;
-    --muted:#94a3b8;
-    --accent:#f59e0b;
-    --danger:#ef4444;
-    --ok:#22c55e;
-    --border:#334155;
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --text:#e2e8f0;
+    --muted:#94a3b8; --accent:#f59e0b; --danger:#ef4444; --ok:#22c55e; --border:#334155;
   }
-
-  *{
-    box-sizing:border-box;
-    margin:0;
-    padding:0;
-  }
-
-  html,
+  *{box-sizing:border-box; margin:0; padding:0;}
   body{
-    width:100%;
-    height:100%;
+    font-family:"Vazirmatn","Segoe UI",Tahoma,sans-serif;
+    background:var(--bg); color:var(--text); height:100vh;
+    display:flex; flex-direction:column; overflow:hidden;
   }
-
-  body{
-    font-family:
-      "Vazirmatn",
-      "Segoe UI",
-      Tahoma,
-      sans-serif;
-
-    background:var(--bg);
-    color:var(--text);
-
-    height:100vh;
-
-    display:flex;
-    flex-direction:column;
-
-    overflow:hidden;
-  }
-
   header{
-    background:var(--panel);
-
-    border-bottom:
-      1px solid var(--border);
-
-    padding:
-      12px
-      20px;
-
-    display:flex;
-    align-items:center;
-
-    gap:12px;
-
-    flex-shrink:0;
+    background:var(--panel); border-bottom:1px solid var(--border);
+    padding:12px 20px; display:flex; align-items:center; gap:12px; flex-shrink:0;
   }
-
-  header h1{
-    font-size:1.05rem;
-    font-weight:700;
-  }
-
-  header .dot{
-    width:10px;
-    height:10px;
-
-    border-radius:50%;
-
-    background:var(--accent);
-
-    flex-shrink:0;
-  }
-
-  #layout{
-    display:flex;
-
-    flex:1;
-
-    min-height:0;
-    min-width:0;
-  }
-
-  #map{
-    flex:1;
-
-    min-width:0;
-    min-height:0;
-
-    background:#0b1220;
-  }
-
+  header h1{font-size:1.05rem; font-weight:700;}
+  header .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);}
+  #layout{display:flex; flex:1; min-height:0;}
   #sidebar{
-    width:330px;
-
-    background:var(--panel);
-
-    border-left:
-      1px solid var(--border);
-
-    padding:16px;
-
-    overflow-y:auto;
-
-    flex-shrink:0;
-
-    display:flex;
-    flex-direction:column;
-
-    gap:14px;
+    width:330px; background:var(--panel); border-left:1px solid var(--border);
+    padding:16px; overflow-y:auto; flex-shrink:0; display:flex; flex-direction:column; gap:14px;
   }
-
+  #map{flex:1; min-width:0; background:#0b1220;}
   .card{
-    background:var(--panel2);
-
-    border:
-      1px solid var(--border);
-
-    border-radius:10px;
-
-    padding:14px;
+    background:var(--panel2); border:1px solid var(--border);
+    border-radius:10px; padding:14px;
   }
-
-  .card h2{
-    font-size:.9rem;
-
-    color:var(--accent);
-
-    margin-bottom:10px;
-  }
-
-  .stat-row{
-    display:flex;
-
-    justify-content:space-between;
-
-    padding:5px 0;
-
-    font-size:.85rem;
-
-    border-bottom:
-      1px dashed
-      rgba(255,255,255,.07);
-  }
-
-  .stat-row:last-child{
-    border-bottom:none;
-  }
-
-  .stat-row .k{
-    color:var(--muted);
-  }
-
-  .stat-row .v{
-    font-weight:600;
-    direction:ltr;
-    text-align:left;
-  }
-
-  #status{
-    font-size:.85rem;
-
-    padding:
-      10px
-      12px;
-
-    border-radius:8px;
-
-    line-height:1.7;
-  }
-
-  #status.info{
-    background:
-      rgba(59,130,246,.15);
-
-    border:
-      1px solid
-      rgba(59,130,246,.4);
-
-    color:#93c5fd;
-  }
-
-  #status.ok{
-    background:
-      rgba(34,197,94,.12);
-
-    border:
-      1px solid
-      rgba(34,197,94,.4);
-
-    color:#86efac;
-  }
-
-  #status.error{
-    background:
-      rgba(239,68,68,.12);
-
-    border:
-      1px solid
-      rgba(239,68,68,.45);
-
-    color:#fca5a5;
-  }
-
-  #error-panel{
-    border-color:
-      rgba(239,68,68,.5);
-  }
-
-  #error-text{
-    font-size:.85rem;
-    line-height:1.9;
-    word-break:break-word;
-  }
-
-  #legend-bar{
-    display:flex;
-
-    height:14px;
-
-    border-radius:4px;
-
-    overflow:hidden;
-
-    margin:
-      8px
-      0
-      4px;
-  }
-
-  #legend-bar div{
-    flex:1;
-  }
-
-  #legend-labels{
-    display:flex;
-
-    justify-content:space-between;
-
-    font-size:.7rem;
-
-    color:var(--muted);
-
-    direction:ltr;
-  }
-
-  .hidden{
-    display:none !important;
-  }
-
-  footer{
-    font-size:.7rem;
-
-    color:var(--muted);
-
-    text-align:center;
-
-    margin-top:auto;
-  }
-
+  .card h2{font-size:.9rem; color:var(--accent); margin-bottom:10px;}
+  .stat-row{display:flex; justify-content:space-between; padding:5px 0; font-size:.85rem; border-bottom:1px dashed rgba(255,255,255,.07);}
+  .stat-row:last-child{border-bottom:none;}
+  .stat-row .k{color:var(--muted);}
+  .stat-row .v{font-weight:600; direction:ltr;}
+  #status{font-size:.85rem; padding:10px 12px; border-radius:8px; line-height:1.7;}
+  #status.info{background:rgba(59,130,246,.15); border:1px solid rgba(59,130,246,.4); color:#93c5fd;}
+  #status.ok{background:rgba(34,197,94,.12); border:1px solid rgba(34,197,94,.4); color:#86efac;}
+  #status.error{background:rgba(239,68,68,.12); border:1px solid rgba(239,68,68,.45); color:#fca5a5;}
+  #legend-bar{display:flex; height:14px; border-radius:4px; overflow:hidden; margin:8px 0 4px;}
+  #legend-bar div{flex:1;}
+  #legend-labels{display:flex; justify-content:space-between; font-size:.7rem; color:var(--muted); direction:ltr;}
+  .hidden{display:none !important;}
+  #error-panel{border-color:rgba(239,68,68,.5);}
+  footer{font-size:.7rem; color:var(--muted); text-align:center;}
   @media (max-width:760px){
-
-    #layout{
-      flex-direction:column;
-    }
-
-    #map{
-      min-height:55vh;
-      height:55vh;
-    }
-
-    #sidebar{
-      width:100%;
-
-      max-height:45vh;
-
-      border-left:none;
-
-      border-top:
-        1px solid
-        var(--border);
-
-      order:2;
-    }
-
+    #layout{flex-direction:column;}
+    #sidebar{width:100%; max-height:45vh; border-left:none; border-top:1px solid var(--border); order:2;}
+    #map{min-height:50vh;}
   }
-
 </style>
-
 </head>
-
 <body>
 
 <header>
-
   <span class="dot"></span>
-
-  <h1>
-    پیش‌بینی ریسک آتش‌سوزی استان فارس
-    — smart-fars-forecast
-  </h1>
-
+  <h1>پیش‌بینی ریسک آتش‌سوزی استان فارس — smart-fars-forecast</h1>
 </header>
 
-
 <div id="layout">
-
-  <div
-    id="map"
-    role="application"
-    aria-label="نقشه ریسک آتش‌سوزی استان فارس">
-  </div>
-
+  <div id="map" role="application" aria-label="نقشه ریسک آتش‌سوزی استان فارس"></div>
 
   <aside id="sidebar">
+    <div id="status" class="info">در حال بارگذاری داده‌ها…</div>
 
-    <div
-      id="status"
-      class="info">
-      در حال بارگذاری داده‌ها…
-    </div>
-
-
-    <div
-      id="error-panel"
-      class="card hidden">
-
+    <div id="error-panel" class="card hidden">
       <h2>خطا</h2>
-
-      <p id="error-text"></p>
-
+      <p id="error-text" style="font-size:.85rem; line-height:1.8;"></p>
     </div>
 
-
     <div class="card">
-
-      <h2>
-        آمار ریسک آتش‌سوزی
-      </h2>
-
-
-      <div class="stat-row">
-        <span class="k">حداقل</span>
-        <span class="v" id="st-min">—</span>
-      </div>
-
-
-      <div class="stat-row">
-        <span class="k">حداکثر</span>
-        <span class="v" id="st-max">—</span>
-      </div>
-
-
-      <div class="stat-row">
-        <span class="k">میانگین</span>
-        <span class="v" id="st-mean">—</span>
-      </div>
-
-
-      <div class="stat-row">
-        <span class="k">ابعاد شبکه</span>
-        <span class="v" id="st-grid">—</span>
-      </div>
-
-
-      <div class="stat-row">
-        <span class="k">منبع داده</span>
-        <span class="v" id="st-source">—</span>
-      </div>
-
-
-      <div class="stat-row">
-        <span class="k">تاریخ داده</span>
-        <span class="v" id="st-date">—</span>
-      </div>
-
+      <h2>آمار ریسک آتش‌سوزی</h2>
+      <div class="stat-row"><span class="k">حداقل</span><span class="v" id="st-min">—</span></div>
+      <div class="stat-row"><span class="k">حداکثر</span><span class="v" id="st-max">—</span></div>
+      <div class="stat-row"><span class="k">میانگین</span><span class="v" id="st-mean">—</span></div>
+      <div class="stat-row"><span class="k">ابعاد شبکه</span><span class="v" id="st-grid">—</span></div>
+      <div class="stat-row"><span class="k">منبع داده</span><span class="v" id="st-source">—</span></div>
+      <div class="stat-row"><span class="k">تاریخ داده</span><span class="v" id="st-date">—</span></div>
     </div>
 
-
     <div class="card">
-
-      <h2>
-        راهنمای ریسک
-      </h2>
-
-
+      <h2>راهنمای رنگ</h2>
       <div id="legend-bar">
-
-        <div
-          style="background:#fff59d">
-        </div>
-
-        <div
-          style="background:#fdd835">
-        </div>
-
-        <div
-          style="background:#fb8c00">
-        </div>
-
-        <div
-          style="background:#e53935">
-        </div>
-
-        <div
-          style="background:#880e4f">
-        </div>
-
+        <div style="background:#edf8fb"></div>
+        <div style="background:#9ed8e0"></div>
+        <div style="background:#5eaec2"></div>
+        <div style="background:#f0be6a"></div>
+        <div style="background:#c02026"></div>
       </div>
-
-
-      <div id="legend-labels">
-
-        <span>0</span>
-        <span>20</span>
-        <span>40</span>
-        <span>60</span>
-        <span>80</span>
-        <span>100</span>
-
-      </div>
-
-
-      <p
-        style="
-          font-size:.75rem;
-          color:var(--muted);
-          margin-top:6px;
-        ">
-        ریسک کمتر → ریسک بیشتر
-      </p>
-
+      <div id="legend-labels"><span>0.0</span><span>0.25</span><span>0.50</span><span>0.75</span><span>1.0</span></div>
+      <p style="font-size:.75rem; color:var(--muted); margin-top:6px;">کم → زیاد</p>
     </div>
 
-
-    <footer>
-      ECMWF / GWIS · Leaflet · EPSG:4326
-    </footer>
-
+    <footer>ECMWF / GWIS · Leaflet · EPSG:4326</footer>
   </aside>
-
 </div>
 
-
-<script
-  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-  crossorigin="">
-</script>
-
-
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""></script>
 <script>
-
 "use strict";
 
-
-/* =========================================================
-   CONFIG
-========================================================= */
-
+/* ------------------------- تنظیمات ------------------------- */
 var CONFIG = {
+  metadataUrl : "generated/fire_risk_latest.json",
+  boundaryUrl : "fars.geojson",
 
-  /*
-     فایل متادیتای تولیدشده توسط build_forecast.py
-  */
-  metadataUrl:
-    "generated/fire_risk_latest.json",
+  /* مسیر واقعی تصویر تولیدشده */
+  fallbackImageUrl : "generated/fire_risk_latest.png",
 
-
-  /*
-     مرز استان فارس
-  */
-  boundaryUrl:
-    "fars.geojson",
-
-
-  /*
-     مسیر واقعی PNG تولیدشده توسط Workflow
-  */
-  fallbackImageUrl:
-    "generated/fire_risk_latest.png",
-
-
-  /*
-     OpenStreetMap
-  */
-  tileUrl:
-    "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-
-
-  tileAttr:
-    "&copy; OpenStreetMap contributors",
-
-
-  /*
-     نمای اولیه
-  */
-  defaultCenter:
-    [29.0, 53.5],
-
-
-  defaultZoom:
-    7
+  tileUrl  : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  tileAttr : "&copy; OpenStreetMap contributors",
+  defaultCenter : [29.0, 53.5],
+  defaultZoom   : 7
 };
 
+/* ------------------------- ابزارها ------------------------- */
+var statusEl = document.getElementById("status");
+var errorPanel = document.getElementById("error-panel");
+var errorText = document.getElementById("error-text");
 
-/* =========================================================
-   DOM
-========================================================= */
+function setStatus(msg, kind) {
+  statusEl.textContent = msg;
+  statusEl.className = (kind === "ok" || kind === "error") ? kind : "info";
+}
 
-var statusEl =
-  document.getElementById("status");
+function showError(msg) {
+  errorPanel.classList.remove("hidden");
+  errorText.textContent = msg;
+  setStatus("خطا در بارگذاری — " + msg, "error");
+}
 
+function hideError() {
+  errorPanel.classList.add("hidden");
+}
 
-var errorPanel =
-  document.getElementById("error-panel");
+function setStat(id, value) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
 
+/* ------------------------- نقشه ------------------------- */
+var map = L.map("map", { zoomControl: true }).setView(CONFIG.defaultCenter, CONFIG.defaultZoom);
 
-var errorText =
-  document.getElementById("error-text");
+L.tileLayer(CONFIG.tileUrl, {
+  attribution: CONFIG.tileAttr,
+  maxZoom: 19
+}).addTo(map);
 
+var farsLayer = null;
+var riskOverlay = null;
 
-/* =========================================================
-   STATUS
-========================================================= */
+/* ------------------------- Cache Buster ------------------------- */
+function addCacheBuster(url) {
+  return url +
+    (url.indexOf("?") >= 0 ? "&" : "?") +
+    "v=" + Date.now();
+}
 
-function setStatus(
-  message,
-  type
-){
+/* ------------------------- اعتبارسنجی فراداده ------------------------- */
+function validateMetadata(meta) {
 
-  statusEl.textContent =
-    message;
-
-  if(
-    type === "ok" ||
-    type === "error"
-  ){
-
-    statusEl.className =
-      type;
-
-  }else{
-
-    statusEl.className =
-      "info";
+  if (!meta || typeof meta !== "object") {
+    throw new Error("فایل فراداده نامعتبر است (شیء JSON معتبر نیست).");
   }
-}
 
-
-function showError(
-  message
-){
-
-  errorPanel.classList.remove(
-    "hidden"
-  );
-
-  errorText.textContent =
-    message;
-
-  setStatus(
-    "خطا در بارگذاری — " +
-    message,
-    "error"
-  );
-}
-
-
-function hideError(){
-
-  errorPanel.classList.add(
-    "hidden"
-  );
-}
-
-
-/* =========================================================
-   STAT
-========================================================= */
-
-function setStat(
-  id,
-  value
-){
-
-  var element =
-    document.getElementById(
-      id
-    );
-
-  if(element){
-
-    element.textContent =
-      value;
+  if (!meta.web || typeof meta.web !== "object") {
+    throw new Error("بخش «web» در فراداده یافت نشد.");
   }
-}
 
+  /* ۱) بررسی CRS */
+  var crs = String(meta.web.crs || "").trim().toUpperCase();
 
-/* =========================================================
-   MAP
-========================================================= */
-
-var map =
-  L.map(
-    "map",
-    {
-      zoomControl:true
-    }
-  );
-
-
-map.setView(
-  CONFIG.defaultCenter,
-  CONFIG.defaultZoom
-);
-
-
-L.tileLayer(
-  CONFIG.tileUrl,
-  {
-    attribution:
-      CONFIG.tileAttr,
-
-    maxZoom:
-      19
-  }
-).addTo(
-  map
-);
-
-
-var farsLayer =
-  null;
-
-
-var riskOverlay =
-  null;
-
-
-/* =========================================================
-   CACHE BUSTER
-========================================================= */
-
-function addCacheBuster(
-  url
-){
-
-  return (
-    url
-    +
-    (
-      url.indexOf("?") >= 0
-        ? "&"
-        : "?"
-    )
-    +
-    "v="
-    +
-    Date.now()
-  );
-}
-
-
-/* =========================================================
-   METADATA VALIDATION
-========================================================= */
-
-function validateMetadata(
-  meta
-){
-
-  if(
-    !meta ||
-    typeof meta !== "object"
-  ){
-
+  if (crs !== "EPSG:4326") {
     throw new Error(
-      "فایل fire_risk_latest.json معتبر نیست."
+      "مختصات وب (CRS) برابر «EPSG:4326» نیست؛ مقدار دریافتی: «" +
+      crs +
+      "»."
     );
   }
 
+  /* ۲) بررسی bounds */
+  var b = meta.web.bounds;
 
-  if(
-    !meta.web ||
-    typeof meta.web !== "object"
-  ){
-
+  if (!Array.isArray(b) || b.length !== 4) {
     throw new Error(
-      "بخش web در fire_risk_latest.json وجود ندارد."
+      "آرایه bounds باید دقیقاً چهار عدد باشد (west, south, east, north)."
     );
   }
 
-
-  var crs =
-    String(
-      meta.web.crs ||
-      ""
-    )
-    .trim()
-    .toUpperCase();
-
-
-  if(
-    crs !== "EPSG:4326"
-  ){
-
-    throw new Error(
-      "CRS وب باید EPSG:4326 باشد. " +
-      "مقدار فعلی: " +
-      crs
-    );
-  }
-
-
-  var bounds =
-    meta.web.bounds;
-
-
-  if(
-    !Array.isArray(bounds) ||
-    bounds.length !== 4
-  ){
-
-    throw new Error(
-      "web.bounds باید چهار مقدار داشته باشد."
-    );
-  }
-
-
-  for(
-    var i = 0;
-    i < 4;
-    i++
-  ){
-
-    if(
-      typeof bounds[i] !== "number" ||
-      !isFinite(bounds[i])
-    ){
-
+  for (var i = 0; i < 4; i++) {
+    if (typeof b[i] !== "number" || !isFinite(b[i])) {
       throw new Error(
-        "web.bounds دارای مقدار نامعتبر است."
+        "bounds شامل مقدار نامعتبر (غیر عددی یا بی‌نهایت) است."
       );
     }
   }
 
+  var west = b[0];
+  var south = b[1];
+  var east = b[2];
+  var north = b[3];
 
-  var west =
-    bounds[0];
-
-
-  var south =
-    bounds[1];
-
-
-  var east =
-    bounds[2];
-
-
-  var north =
-    bounds[3];
-
-
-  if(
-    !(west < east) ||
-    !(south < north)
-  ){
-
+  if (!(west < east) || !(south < north)) {
     throw new Error(
-      "ترتیب مختصات bounds نامعتبر است."
+      "ترتیب مختصات bounds نامعتبر است؛ انتظار: [غرب، جنوب، شرق، شمال]."
     );
   }
 
-
-  /*
-     کنترل محدوده تقریبی استان فارس
-  */
-
-  if(
-    west < 49 ||
-    east > 59 ||
-    south < 25 ||
-    north > 33
-  ){
-
+  /* محدوده تقریبی استان فارس */
+  if (west < 49 || east > 59 || south < 25 || north > 33) {
     throw new Error(
-      "bounds خارج از محدوده مورد انتظار استان فارس است."
+      "مختصات bounds خارج از محدوده مورد انتظار استان فارس است."
     );
   }
 
-
-  /*
-     تبدیل:
-     [west,south,east,north]
-
-     به Leaflet:
-
-     [[south,west],[north,east]]
-  */
-
+  /* ۳) تبدیل به ترتیب Leaflet */
   var leafletBounds = [
-
-    [
-      south,
-      west
-    ],
-
-    [
-      north,
-      east
-    ]
-
+    [south, west],
+    [north, east]
   ];
 
-
   /*
-     مسیر تصویر
+     ۴) آدرس تصویر
 
-     اول:
-       web.image_url
+     اگر build_forecast.py در metadata
+     آدرس تصویر را نوشته باشد، از آن استفاده می‌شود.
 
-     دوم:
-       image_url
-
-     سوم:
-       مسیر قطعی فعلی
+     در غیر این صورت مسیر واقعی PNG استفاده می‌شود.
   */
-
   var imageUrl =
-
     meta.web.image_url ||
-
     meta.image_url ||
-
     CONFIG.fallbackImageUrl;
 
-
-  /*
-     اگر accidentally فقط نام فایل
-     نوشته شده باشد، مسیر generated
-     را اصلاح می‌کنیم.
-  */
-
-  if(
-    imageUrl === "fire_risk_latest.png"
-  ){
-
-    imageUrl =
-      "generated/fire_risk_latest.png";
+  /* اگر نام قدیمی در metadata مانده باشد */
+  if (imageUrl === "fire_risk_gradient.png") {
+    imageUrl = CONFIG.fallbackImageUrl;
   }
-
-
-  if(
-    imageUrl === "fire_risk_gradient.png"
-  ){
-
-    imageUrl =
-      "generated/fire_risk_latest.png";
-  }
-
 
   return {
-
-    leafletBounds:
-      leafletBounds,
-
-    imageUrl:
-      imageUrl,
-
-    meta:
-      meta
-
+    leafletBounds: leafletBounds,
+    imageUrl: imageUrl,
+    meta: meta
   };
 }
 
-
-/* =========================================================
-   STATISTICS
-========================================================= */
-
-function updateStats(
-  meta
-){
-
-  var statistics =
-    meta.statistics ||
-    meta.stats ||
-    {};
-
+/* ------------------------- به‌روزرسانی آمار ------------------------- */
+function updateStats(meta) {
 
   /*
-     Min
+     نسخه جدید build_forecast.py از statistics استفاده می‌کند.
+     برای سازگاری، stats قدیمی هم پشتیبانی می‌شود.
   */
+  var s = meta.statistics || meta.stats || {};
 
-  if(
-    typeof statistics.min === "number" &&
-    isFinite(statistics.min)
-  ){
-
-    setStat(
-      "st-min",
-      statistics.min.toFixed(2)
-    );
-
-  }else{
-
-    setStat(
-      "st-min",
-      "—"
-    );
+  if (typeof s.min === "number" && isFinite(s.min)) {
+    setStat("st-min", s.min.toFixed(4));
+  } else {
+    setStat("st-min", "—");
   }
 
-
-  /*
-     Max
-  */
-
-  if(
-    typeof statistics.max === "number" &&
-    isFinite(statistics.max)
-  ){
-
-    setStat(
-      "st-max",
-      statistics.max.toFixed(2)
-    );
-
-  }else{
-
-    setStat(
-      "st-max",
-      "—"
-    );
+  if (typeof s.max === "number" && isFinite(s.max)) {
+    setStat("st-max", s.max.toFixed(4));
+  } else {
+    setStat("st-max", "—");
   }
 
-
-  /*
-     Mean
-  */
-
-  if(
-    typeof statistics.mean === "number" &&
-    isFinite(statistics.mean)
-  ){
-
-    setStat(
-      "st-mean",
-      statistics.mean.toFixed(2)
-    );
-
-  }else{
-
-    setStat(
-      "st-mean",
-      "—"
-    );
+  if (typeof s.mean === "number" && isFinite(s.mean)) {
+    setStat("st-mean", s.mean.toFixed(4));
+  } else {
+    setStat("st-mean", "—");
   }
 
-
   /*
-     Grid
+     ابعاد شبکه از Master Raster
   */
-
-  if(
+  if (
     meta.master_grid &&
     meta.master_grid.width &&
     meta.master_grid.height
-  ){
-
+  ) {
     setStat(
       "st-grid",
-
-      String(
-        meta.master_grid.width
-      )
-      +
-      " × "
-      +
-      String(
-        meta.master_grid.height
-      )
-
+      String(meta.master_grid.width) +
+      " × " +
+      String(meta.master_grid.height)
     );
-
-  }else{
-
-    setStat(
-      "st-grid",
-      "—"
-    );
+  } else if (s.grid_size) {
+    setStat("st-grid", String(s.grid_size));
+  } else {
+    setStat("st-grid", "—");
   }
-
-
-  /*
-     Source
-  */
-
-  var source =
-    "ECMWF / GWIS";
-
-
-  if(
-    meta.source
-  ){
-
-    source =
-      meta.source.ecmwf ||
-      meta.source.gwis ||
-      meta.source.dataset ||
-      source;
-  }
-
 
   setStat(
     "st-source",
-    source
+    (meta.source &&
+      (
+        meta.source.ecmwf ||
+        meta.source.gwis ||
+        meta.source.dataset
+      )) ||
+    "ECMWF / GWIS"
   );
-
-
-  /*
-     Date
-  */
-
-  var date =
-    meta.date ||
-    meta.forecast_date ||
-    (
-      meta.fwi_processing &&
-      meta.fwi_processing.date
-    ) ||
-    "—";
-
 
   setStat(
     "st-date",
-    date
+    meta.date ||
+    meta.forecast_date ||
+    "—"
   );
 }
 
+/* ------------------------- بررسی وجود تصویر ------------------------- */
+function checkImage(url) {
 
-/* =========================================================
-   TEST IMAGE
-========================================================= */
+  return new Promise(function(resolve, reject) {
 
-function testImage(
-  imageUrl
-){
+    var img = new Image();
 
-  return new Promise(
-    function(
-      resolve,
-      reject
-    ){
+    img.onload = function() {
+      resolve();
+    };
 
-      var image =
-        new Image();
+    img.onerror = function() {
+      reject(
+        new Error(
+          "فایل نقشه ریسک پیدا نشد: " + url
+        )
+      );
+    };
 
-
-      image.onload =
-        function(){
-
-          resolve();
-        };
-
-
-      image.onerror =
-        function(){
-
-          reject(
-            new Error(
-              "فایل تصویر ریسک قابل دسترسی نیست: " +
-              imageUrl
-            )
-          );
-        };
-
-
-      image.src =
-        addCacheBuster(
-          imageUrl
-        );
-    }
-  );
+    img.src = addCacheBuster(url);
+  });
 }
 
-
-/* =========================================================
-   LOAD METADATA
-========================================================= */
-
-function loadMetadata(){
-
-  return fetch(
-    addCacheBuster(
-      CONFIG.metadataUrl
-    ),
-    {
-      cache:"no-store"
-    }
-  )
-
-  .then(
-    function(response){
-
-      if(
-        !response.ok
-      ){
-
-        throw new Error(
-          "دریافت fire_risk_latest.json ناموفق بود. " +
-          "HTTP " +
-          response.status
-        );
-      }
-
-      return response.json();
-    }
-  );
-}
-
-
-/* =========================================================
-   LOAD BOUNDARY
-========================================================= */
-
-function loadBoundary(){
-
-  return fetch(
-    addCacheBuster(
-      CONFIG.boundaryUrl
-    ),
-    {
-      cache:"no-store"
-    }
-  )
-
-  .then(
-    function(response){
-
-      if(
-        !response.ok
-      ){
-
-        throw new Error(
-          "دریافت fars.geojson ناموفق بود. " +
-          "HTTP " +
-          response.status
-        );
-      }
-
-      return response.json();
-    }
-  );
-}
-
-
-/* =========================================================
-   ADD RISK IMAGE
-========================================================= */
-
-function addRiskLayer(
-  imageUrl,
-  bounds
-){
-
-  if(
-    riskOverlay
-  ){
-
-    map.removeLayer(
-      riskOverlay
-    );
-
-    riskOverlay =
-      null;
-  }
-
-
-  /*
-     Cache bust فقط برای
-     آدرس درخواست‌شده در مرورگر
-  */
-
-  var finalUrl =
-    addCacheBuster(
-      imageUrl
-    );
-
-
-  riskOverlay =
-    L.imageOverlay(
-      finalUrl,
-      bounds,
-      {
-        opacity:0.90,
-
-        interactive:false,
-
-        crossOrigin:false,
-
-        className:
-          "fars-risk-overlay"
-      }
-    );
-
-
-  riskOverlay.addTo(
-    map
-  );
-
-
-  return riskOverlay;
-}
-
-
-/* =========================================================
-   ADD FARS BOUNDARY
-========================================================= */
-
-function addBoundary(
-  geo
-){
-
-  if(
-    farsLayer
-  ){
-
-    map.removeLayer(
-      farsLayer
-    );
-
-    farsLayer =
-      null;
-  }
-
-
-  farsLayer =
-    L.geoJSON(
-      geo,
-      {
-
-        style:function(){
-
-          return {
-
-            color:
-              "#7f1d1d",
-
-            weight:
-              2.5,
-
-            opacity:
-              0.95,
-
-            fillColor:
-              "#000000",
-
-            fillOpacity:
-              0.0,
-
-            interactive:
-              false
-
-          };
-        }
-
-      }
-    );
-
-
-  farsLayer.addTo(
-    map
-  );
-
-
-  farsLayer.bringToFront();
-
-
-  return farsLayer;
-}
-
-
-/* =========================================================
-   MAIN LOADER
-========================================================= */
-
-function loadAll(){
-
-  hideError();
-
+/* ------------------------- بارگذاری اصلی ------------------------- */
+function loadAll() {
 
   setStatus(
-    "در حال دریافت اطلاعات پیش‌بینی…",
+    "در حال دریافت فراداده پیش‌بینی…",
     "info"
   );
 
+  hideError();
 
-  /*
-     1. Metadata
-  */
-
-  loadMetadata()
-
-  .then(
-    function(meta){
-
-      var validated =
-        validateMetadata(
-          meta
-        );
-
-
-      updateStats(
-        meta
-      );
-
-
-      setStatus(
-        "اطلاعات دریافت شد؛ در حال بررسی تصویر نقشه…",
-        "info"
-      );
-
-
-      /*
-         2. بررسی وجود واقعی PNG
-      */
-
-      return testImage(
-        validated.imageUrl
-      )
-
-      .then(
-        function(){
-
-          return {
-
-            meta:
-              meta,
-
-            validated:
-              validated
-
-          };
-        }
-      );
+  fetch(
+    addCacheBuster(CONFIG.metadataUrl),
+    {
+      cache: "no-store"
     }
   )
 
+    .then(function(res) {
 
-  /*
-     3. Boundary
-  */
-
-  .then(
-    function(data){
-
-      setStatus(
-        "تصویر ریسک موجود است؛ در حال بارگذاری مرز استان…",
-        "info"
-      );
-
-
-      return loadBoundary()
-
-      .then(
-        function(geo){
-
-          return {
-
-            meta:
-              data.meta,
-
-            validated:
-              data.validated,
-
-            geo:
-              geo
-
-          };
-        }
-      );
-    }
-  )
-
-
-  /*
-     4. Draw map
-  */
-
-  .then(
-    function(data){
-
-      /*
-         رستر
-      */
-
-      addRiskLayer(
-        data.validated.imageUrl,
-        data.validated.leafletBounds
-      );
-
-
-      /*
-         مرز
-      */
-
-      var layer =
-        addBoundary(
-          data.geo
-        );
-
-
-      /*
-         Fit map
-      */
-
-      var bounds =
-        layer.getBounds();
-
-
-      if(
-        bounds &&
-        bounds.isValid()
-      ){
-
-        map.fitBounds(
-          bounds,
-          {
-            padding:
-              [24,24]
-          }
+      if (!res.ok) {
+        throw new Error(
+          "دریافت فایل فراداده ناموفق بود (کد وضعیت " +
+          res.status +
+          "). مسیر: " +
+          CONFIG.metadataUrl
         );
       }
 
+      return res.json();
+    })
 
-      /*
-         Leaflet ممکن است
-         قبل از رسم کامل map
-         اندازه را اشتباه بگیرد.
-      */
+    .then(function(meta) {
 
-      setTimeout(
-        function(){
+      var v = validateMetadata(meta);
 
-          map.invalidateSize();
-
-        },
-        250
-      );
-
+      updateStats(meta);
 
       setStatus(
-        "نقشه ریسک آتش‌سوزی استان فارس با موفقیت بارگذاری شد.",
-        "ok"
+        "در حال بررسی تصویر نقشه ریسک…",
+        "info"
       );
 
-    }
-  )
+      /*
+         ابتدا مطمئن می‌شویم PNG واقعاً در GitHub Pages هست.
+      */
+      return checkImage(v.imageUrl)
+        .then(function() {
 
+          return {
+            meta: meta,
+            view: v
+          };
 
-  /*
-     5. Error
-  */
+        });
+    })
 
-  .catch(
-    function(error){
+    .then(function(data) {
 
-      console.error(
-        "Smart Fars Forecast error:",
-        error
+      var meta = data.meta;
+      var v = data.view;
+
+      setStatus(
+        "در حال بارگذاری مرز استان فارس…",
+        "info"
       );
 
+      return fetch(
+        addCacheBuster(CONFIG.boundaryUrl),
+        {
+          cache: "no-store"
+        }
+      )
+
+        .then(function(res) {
+
+          if (!res.ok) {
+            throw new Error(
+              "دریافت مرز استان ناموفق بود (کد " +
+              res.status +
+              "). مسیر: " +
+              CONFIG.boundaryUrl
+            );
+          }
+
+          return res.json();
+        })
+
+        .then(function(geo) {
+
+          /* ۱) لایه رستری ریسک */
+
+          riskOverlay = L.imageOverlay(
+            addCacheBuster(v.imageUrl),
+            v.leafletBounds,
+            {
+              opacity: 0.85,
+              interactive: false
+            }
+          ).addTo(map);
+
+
+          /* ۲) لایه برداری مرز استان */
+
+          farsLayer = L.geoJSON(
+            geo,
+            {
+              style: function() {
+
+                return {
+                  color: "#7f1d1d",
+                  weight: 2.5,
+                  opacity: 0.95,
+                  fillColor: "#000000",
+                  fillOpacity: 0.0,
+                  interactive: false
+                };
+
+              }
+            }
+          ).addTo(map);
+
+
+          /* ۳) مرز روی رستر */
+
+          farsLayer.bringToFront();
+
+
+          /* ۴) متناسب‌سازی نمای نقشه */
+
+          map.fitBounds(
+            farsLayer.getBounds(),
+            {
+              padding: [24, 24]
+            }
+          );
+
+
+          /* ۵) اطمینان از اندازه صحیح نقشه */
+
+          setTimeout(function() {
+            map.invalidateSize();
+          }, 200);
+
+
+          setStatus(
+            "بارگذاری با موفقیت انجام شد. نقشه ریسک آتش‌سوزی استان فارس آماده است.",
+            "ok"
+          );
+        });
+    })
+
+    .catch(function(err) {
 
       showError(
-        error &&
-        error.message
-          ? error.message
-          : String(error)
+        err && err.message
+          ? err.message
+          : String(err)
       );
 
-    }
-  );
+      console.error(
+        "Smart Fars Forecast:",
+        err
+      );
+    });
 }
 
-
-/* =========================================================
-   START
-========================================================= */
-
-if(
-  typeof L === "undefined"
-){
+/* ------------------------- شروع ------------------------- */
+if (typeof L === "undefined") {
 
   showError(
-    "Leaflet بارگذاری نشده است. اتصال اینترنت یا CDN را بررسی کنید."
+    "کتابخانه Leaflet بارگذاری نشد؛ اتصال اینترنت را بررسی کنید."
   );
 
-}else{
+} else {
 
   loadAll();
 
 }
-
-
-/* =========================================================
-   RESIZE
-========================================================= */
-
-window.addEventListener(
-  "resize",
-  function(){
-
-    setTimeout(
-      function(){
-
-        map.invalidateSize();
-
-      },
-      100
-    );
-
-  }
-);
-
 </script>
-
 </body>
 </html>
