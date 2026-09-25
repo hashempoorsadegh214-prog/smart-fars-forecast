@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 
 """Smart Fars Forecast builder.
@@ -10,8 +9,9 @@ Scientific chain:
     topography = 0.80*slope_norm + 0.20*aspect_norm
     risk = 100*(0.45*FWI_norm + 0.35*Fuel_norm + 0.20*Topography)
 
-The scientific GeoTIFF is never smoothed for the web. Web-only smoothing is
-applied only to the PNG visualization.
+The scientific GeoTIFF is never smoothed or georeferenced differently for
+the web. Web-only smoothing and four-corner web georeferencing are applied
+only to the PNG visualization.
 """
 
 import argparse
@@ -47,50 +47,123 @@ DEFAULT_FWI_SMOOTHING = 1
 DEFAULT_WEB_SMOOTHING_RADIUS = 18.0
 ALPHA_VALUE = 235
 
+# ---------------------------------------------------------------------------
+# Web-only four-corner georeferencing control points.
+#
+# These are the exact bounding-box corners calculated from fars.geojson.
+# The scientific GeoTIFF is NOT modified by these values.
+# ---------------------------------------------------------------------------
+FARS_WEB_WEST = 50.603183099720354
+FARS_WEB_EAST = 55.58006519994905
+FARS_WEB_SOUTH = 27.04561700022441
+FARS_WEB_NORTH = 31.669598899969287
+
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Build Smart Fars wildfire forecast")
-    p.add_argument("--fwi", type=Path, default=DEFAULT_FWI)
-    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    p.add_argument("--master", type=Path, default=DEFAULT_MASTER)
-    p.add_argument("--dem", type=Path, default=DEFAULT_DEM)
-    p.add_argument("--slope", type=Path, default=DEFAULT_SLOPE)
-    p.add_argument("--boundary", type=Path, default=DEFAULT_BOUNDARY)
-    p.add_argument("--output-tif", type=Path, default=DEFAULT_OUTPUT_TIF)
-    p.add_argument("--web-dir", type=Path, default=DEFAULT_WEB_DIR)
+    p = argparse.ArgumentParser(
+        description="Build Smart Fars wildfire forecast"
+    )
+
+    p.add_argument(
+        "--fwi",
+        type=Path,
+        default=DEFAULT_FWI
+    )
+
+    p.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG
+    )
+
+    p.add_argument(
+        "--master",
+        type=Path,
+        default=DEFAULT_MASTER
+    )
+
+    p.add_argument(
+        "--dem",
+        type=Path,
+        default=DEFAULT_DEM
+    )
+
+    p.add_argument(
+        "--slope",
+        type=Path,
+        default=DEFAULT_SLOPE
+    )
+
+    p.add_argument(
+        "--boundary",
+        type=Path,
+        default=DEFAULT_BOUNDARY
+    )
+
+    p.add_argument(
+        "--output-tif",
+        type=Path,
+        default=DEFAULT_OUTPUT_TIF
+    )
+
+    p.add_argument(
+        "--web-dir",
+        type=Path,
+        default=DEFAULT_WEB_DIR
+    )
+
     return p.parse_args()
 
 
 def ensure_file(path, label):
     if not path.exists():
-        raise FileNotFoundError(f"{label} not found: {path}")
+        raise FileNotFoundError(
+            f"{label} not found: {path}"
+        )
 
 
 def load_json(path):
-    with path.open("r", encoding="utf-8") as f:
+    with path.open(
+        "r",
+        encoding="utf-8"
+    ) as f:
         return json.load(f)
 
 
 def load_boundary(path):
-    with path.open("r", encoding="utf-8") as f:
+    with path.open(
+        "r",
+        encoding="utf-8"
+    ) as f:
         data = json.load(f)
 
     geometries = []
 
     if data.get("type") == "FeatureCollection":
-        for feature in data.get("features", []):
+
+        for feature in data.get(
+            "features",
+            []
+        ):
+
             if feature.get("geometry"):
                 geometries.append(
-                    shape(feature["geometry"])
+                    shape(
+                        feature["geometry"]
+                    )
                 )
 
     elif data.get("type") == "Feature":
+
         if data.get("geometry"):
             geometries.append(
-                shape(data["geometry"])
+                shape(
+                    data["geometry"]
+                )
             )
 
     else:
+
         geometries.append(
             shape(data)
         )
@@ -134,19 +207,40 @@ def reproject_geometry(
 
 def load_master(path):
     with rasterio.open(path) as src:
+
         return {
-            "data": src.read(1).astype("float32"),
-            "width": src.width,
-            "height": src.height,
-            "transform": src.transform,
-            "crs": src.crs,
-            "nodata": src.nodata,
-            "profile": src.profile.copy(),
+            "data":
+                src.read(1).astype(
+                    "float32"
+                ),
+
+            "width":
+                src.width,
+
+            "height":
+                src.height,
+
+            "transform":
+                src.transform,
+
+            "crs":
+                src.crs,
+
+            "nodata":
+                src.nodata,
+
+            "profile":
+                src.profile.copy(),
         }
 
 
-def read_to_master_grid(source_path, master):
-    with rasterio.open(source_path) as src:
+def read_to_master_grid(
+    source_path,
+    master
+):
+    with rasterio.open(
+        source_path
+    ) as src:
 
         source = src.read(1).astype(
             "float32"
@@ -159,9 +253,12 @@ def read_to_master_grid(source_path, master):
         )
 
         if source_nodata is not None:
+
             invalid |= np.isclose(
                 source,
-                float(source_nodata)
+                float(
+                    source_nodata
+                )
             )
 
         source[invalid] = -9999.0
@@ -216,9 +313,12 @@ def fill_fwi_nodata(
     )
 
     if source_nodata is not None:
+
         valid &= ~np.isclose(
             fwi,
-            float(source_nodata)
+            float(
+                source_nodata
+            )
         )
 
     nodata_before = int(
@@ -230,11 +330,18 @@ def fill_fwi_nodata(
     if nodata_before == 0:
 
         return fwi, {
-            "nodata_before": 0,
-            "filled_pixels": 0,
-            "nodata_after": 0,
+            "nodata_before":
+                0,
+
+            "filled_pixels":
+                0,
+
+            "nodata_after":
+                0,
+
             "max_search_distance":
                 DEFAULT_FWI_FILL_DISTANCE,
+
             "smoothing_iterations":
                 DEFAULT_FWI_SMOOTHING,
         }
@@ -249,11 +356,15 @@ def fill_fwi_nodata(
 
     filled = fillnodata(
         image=work,
-        mask=valid.astype("uint8"),
-        max_search_distance=
-            DEFAULT_FWI_FILL_DISTANCE,
-        smoothing_iterations=
-            DEFAULT_FWI_SMOOTHING,
+        mask=valid.astype(
+            "uint8"
+        ),
+        max_search_distance=(
+            DEFAULT_FWI_FILL_DISTANCE
+        ),
+        smoothing_iterations=(
+            DEFAULT_FWI_SMOOTHING
+        ),
     ).astype(
         "float32"
     )
@@ -300,7 +411,9 @@ def prepare_fwi(
     path,
     master
 ):
-    with rasterio.open(path) as src:
+    with rasterio.open(
+        path
+    ) as src:
 
         raw = src.read(1).astype(
             "float32"
@@ -313,6 +426,7 @@ def prepare_fwi(
         src_crs = src.crs
 
     print("\nFWI source:")
+
     print(
         "  Size:",
         raw.shape
@@ -352,7 +466,9 @@ def prepare_fwi(
         np.isfinite(filled),
         filled,
         -9999.0
-    ).astype("float32")
+    ).astype(
+        "float32"
+    )
 
     destination = np.full(
         (
@@ -384,7 +500,10 @@ def prepare_fwi(
         )
     ] = np.nan
 
-    return destination, stats
+    return (
+        destination,
+        stats
+    )
 
 
 def normalize_linear(
@@ -416,11 +535,14 @@ def normalize_linear(
                     minimum,
                     maximum
                 )
-                - minimum
+                -
+                minimum
             )
             /
             (maximum - minimum)
-        ).astype("float32")
+        ).astype(
+            "float32"
+        )
 
     return out
 
@@ -438,6 +560,7 @@ def normalize_percentile(
     )
 
     if not np.any(valid):
+
         raise ValueError(
             "No valid pixels for fuel normalization"
         )
@@ -459,6 +582,7 @@ def normalize_percentile(
     )
 
     if high <= low:
+
         raise ValueError(
             "Invalid fuel percentile range"
         )
@@ -476,13 +600,20 @@ def normalize_percentile(
                 low,
                 high
             )
-            - low
+            -
+            low
         )
         /
         (high - low)
-    ).astype("float32")
+    ).astype(
+        "float32"
+    )
 
-    return out, low, high
+    return (
+        out,
+        low,
+        high
+    )
 
 
 def calculate_aspect_risk(
@@ -502,13 +633,25 @@ def calculate_aspect_risk(
     if not np.any(valid):
         return out
 
-    dx = abs(
-        float(transform.a)
-    ) or 1.0
+    dx = (
+        abs(
+            float(
+                transform.a
+            )
+        )
+        or
+        1.0
+    )
 
-    dy = abs(
-        float(transform.e)
-    ) or 1.0
+    dy = (
+        abs(
+            float(
+                transform.e
+            )
+        )
+        or
+        1.0
+    )
 
     safe_dem = np.array(
         dem,
@@ -539,7 +682,8 @@ def calculate_aspect_risk(
                 -dz_dy
             )
         )
-        + 360.0
+        +
+        360.0
     ) % 360.0
 
     good = (
@@ -609,9 +753,13 @@ def build_topography(
     )
 
     topo = (
-        slope_weight * slope_norm
+        slope_weight
+        *
+        slope_norm
         +
-        aspect_weight * aspect_norm
+        aspect_weight
+        *
+        aspect_norm
     )
 
     topo[
@@ -668,6 +816,7 @@ def box_blur_2d(
     )
 
     if radius <= 0:
+
         return np.array(
             array,
             dtype="float32",
@@ -708,15 +857,22 @@ def box_blur_2d(
     c = np.pad(
         c,
         (
-            (1, 0),
-            (1, 0)
+            (
+                1,
+                0
+            ),
+            (
+                1,
+                0
+            )
         ),
         mode="constant"
     )
 
     size = (
         2 * radius
-        + 1
+        +
+        1
     )
 
     result = (
@@ -754,6 +910,7 @@ def smooth_web_risk(
     radius
 ):
     if radius <= 0:
+
         return np.array(
             risk,
             dtype="float32",
@@ -887,7 +1044,10 @@ def risk_to_rgb(
         "uint8"
     )
 
-    return rgb, valid
+    return (
+        rgb,
+        valid
+    )
 
 
 def web_bounds(
@@ -905,7 +1065,8 @@ def web_bounds(
     ):
 
         t = (
-            i /
+            i
+            /
             float(samples)
         )
 
@@ -915,14 +1076,17 @@ def web_bounds(
                     t * width,
                     0.0
                 ),
+
                 (
                     t * width,
                     float(height)
                 ),
+
                 (
                     0.0,
                     t * height
                 ),
+
                 (
                     float(width),
                     t * height
@@ -936,12 +1100,18 @@ def web_bounds(
     ]
 
     xs = np.array(
-        [p[0] for p in xy],
+        [
+            p[0]
+            for p in xy
+        ],
         dtype="float64"
     )
 
     ys = np.array(
-        [p[1] for p in xy],
+        [
+            p[1]
+            for p in xy
+        ],
         dtype="float64"
     )
 
@@ -971,15 +1141,35 @@ def web_bounds(
     )
 
     if not np.any(good):
+
         raise ValueError(
             "Could not calculate web bounds"
         )
 
     return [
-        float(np.min(lon[good])),
-        float(np.min(lat[good])),
-        float(np.max(lon[good])),
-        float(np.max(lat[good])),
+        float(
+            np.min(
+                lon[good]
+            )
+        ),
+
+        float(
+            np.min(
+                lat[good]
+            )
+        ),
+
+        float(
+            np.max(
+                lon[good]
+            )
+        ),
+
+        float(
+            np.max(
+                lat[good]
+            )
+        ),
     ]
 
 
@@ -1039,8 +1229,6 @@ def create_web_png(
         Image.Resampling.BICUBIC
     )
 
-    # IMPORTANT:
-    # copy=True prevents the Pillow read-only array problem.
     risk_web = np.array(
         risk_resized,
         dtype="float32",
@@ -1050,7 +1238,8 @@ def create_web_png(
     valid_image = Image.fromarray(
         (
             np.isfinite(risk)
-            * 255
+            *
+            255
         ).astype(
             "uint8"
         ),
@@ -1105,56 +1294,156 @@ def create_web_png(
         dtype="uint8"
     )
 
-    sx = (
-        float(width)
-        /
-        float(target_width)
+    # ------------------------------------------------------------------
+    # Four-point web georeferencing.
+    #
+    # SOURCE:
+    #   NW / NE / SE / SW = actual corners of the scientific raster
+    #
+    # TARGET:
+    #   NW / NE / SE / SW = corners of the Fars boundary bounding box
+    #
+    # ONLY the web PNG uses this transform.
+    # The scientific GeoTIFF remains completely unchanged.
+    # ------------------------------------------------------------------
+
+    source_bounds = web_bounds(
+        master["transform"],
+        width,
+        height,
+        master["crs"]
     )
 
-    sy = (
-        float(height)
-        /
-        float(target_height)
+    target_bounds = [
+        FARS_WEB_WEST,
+        FARS_WEB_SOUTH,
+        FARS_WEB_EAST,
+        FARS_WEB_NORTH,
+    ]
+
+    source_west, source_south, source_east, source_north = (
+        source_bounds
     )
+
+    target_west, target_south, target_east, target_north = (
+        target_bounds
+    )
+
+    # Web PNG is published in EPSG:4326.
+    # The four TARGET control points define its geographic transform.
 
     target_transform = Affine(
-        master["transform"].a * sx,
-        master["transform"].b * sx,
-        master["transform"].c,
-        master["transform"].d * sy,
-        master["transform"].e * sy,
-        master["transform"].f,
+        (
+            target_east
+            -
+            target_west
+        )
+        /
+        float(
+            target_width
+        ),
+
+        0.0,
+
+        target_west,
+
+        0.0,
+
+        -(
+            target_north
+            -
+            target_south
+        )
+        /
+        float(
+            target_height
+        ),
+
+        target_north,
     )
 
-    geometry_master = reproject_geometry(
+    geometry_web = reproject_geometry(
         boundary_geometry,
         boundary_crs,
-        master["crs"]
+        "EPSG:4326"
     )
 
     province_mask = rasterize(
         [
             (
                 mapping(
-                    geometry_master
+                    geometry_web
                 ),
                 1
             )
         ],
+
         out_shape=(
             target_height,
             target_width
         ),
+
         transform=target_transform,
+
         fill=0,
+
         all_touched=False,
+
         dtype="uint8",
     ).astype(
         bool
     )
 
+    control_points = {
+        "source": {
+            "NW": [
+                source_west,
+                source_north
+            ],
+
+            "NE": [
+                source_east,
+                source_north
+            ],
+
+            "SE": [
+                source_east,
+                source_south
+            ],
+
+            "SW": [
+                source_west,
+                source_south
+            ],
+        },
+
+        "target": {
+            "NW": [
+                target_west,
+                target_north
+            ],
+
+            "NE": [
+                target_east,
+                target_north
+            ],
+
+            "SE": [
+                target_east,
+                target_south
+            ],
+
+            "SW": [
+                target_west,
+                target_south
+            ],
+        },
+    }
+
     alpha = np.where(
-        province_mask & finite,
+        province_mask
+        &
+        finite,
         ALPHA_VALUE,
         0
     ).astype(
@@ -1172,7 +1461,8 @@ def create_web_png(
     )
 
     png_path = (
-        web_dir /
+        web_dir
+        /
         "fire_risk_latest.png"
     )
 
@@ -1182,12 +1472,11 @@ def create_web_png(
         optimize=True
     )
 
-    bounds = web_bounds(
-        master["transform"],
-        width,
-        height,
-        master["crs"]
-    )
+    # --------------------------------------------------------------
+    # Publish TARGET bounds, not original raster bounds.
+    # --------------------------------------------------------------
+
+    bounds = target_bounds
 
     meta = {
         "image_size": [
@@ -1203,6 +1492,9 @@ def create_web_png(
         "bounds":
             bounds,
 
+        "control_points":
+            control_points,
+
         "image_url":
             "generated/fire_risk_latest.png",
 
@@ -1210,8 +1502,14 @@ def create_web_png(
             "crs":
                 "EPSG:4326",
 
+            "georeferencing":
+                "four-corner control-point mapping",
+
             "bounds":
                 bounds,
+
+            "control_points":
+                control_points,
 
             "image_url":
                 "generated/fire_risk_latest.png",
@@ -1246,7 +1544,8 @@ def create_web_png(
     }
 
     metadata_path = (
-        web_dir /
+        web_dir
+        /
         "fire_risk_latest.json"
     )
 
@@ -1280,6 +1579,7 @@ def calculate_statistics(
     )
 
     if not np.any(valid):
+
         raise ValueError(
             "No valid risk cells inside Fars"
         )
@@ -1288,22 +1588,34 @@ def calculate_statistics(
 
     return {
         "valid_cells":
-            int(values.size),
+            int(
+                values.size
+            ),
 
         "min":
-            float(np.min(values)),
+            float(
+                np.min(values)
+            ),
 
         "max":
-            float(np.max(values)),
+            float(
+                np.max(values)
+            ),
 
         "mean":
-            float(np.mean(values)),
+            float(
+                np.mean(values)
+            ),
 
         "median":
-            float(np.median(values)),
+            float(
+                np.median(values)
+            ),
 
         "std":
-            float(np.std(values)),
+            float(
+                np.std(values)
+            ),
 
         "classes": {
             "very_low":
@@ -1449,6 +1761,7 @@ def main():
         1.0,
         atol=1e-6
     ):
+
         raise ValueError(
             "Model weights must sum to 1"
         )
@@ -1616,12 +1929,16 @@ def main():
                 boundary_master
             )
         ],
+
         out_shape=(
             master["height"],
             master["width"]
         ),
+
         transform=master["transform"],
+
         invert=True,
+
         all_touched=False,
     )
 
@@ -1834,9 +2151,9 @@ def main():
         exist_ok=True
     )
 
-    profile = master[
-        "profile"
-    ].copy()
+    profile = (
+        master["profile"].copy()
+    )
 
     profile.update(
         driver="GTiff",
@@ -1945,7 +2262,9 @@ def main():
 
         "fwi_processing": {
             "raw_source":
-                str(args.fwi),
+                str(
+                    args.fwi
+                ),
 
             "fillnodata":
                 fwi_fill_stats,
@@ -2023,10 +2342,14 @@ def main():
 
         "outputs": {
             "raster":
-                str(args.output_tif),
+                str(
+                    args.output_tif
+                ),
 
             "web_png":
-                str(png_path),
+                str(
+                    png_path
+                ),
 
             "web_metadata":
                 str(
@@ -2094,6 +2417,11 @@ def main():
     print(
         "Web smoothing radius:",
         web_smoothing_radius
+    )
+
+    print(
+        "Web georeferencing:",
+        "four-corner control-point mapping"
     )
 
     return 0
